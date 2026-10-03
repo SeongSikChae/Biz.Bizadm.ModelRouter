@@ -15,7 +15,10 @@ namespace Biz.Bizadm.ModelRouter.Server.Middleware
         {
             string method = context.Request.Method;
             string path = context.Request.Path + context.Request.QueryString;
-            string? remoteIp = context.Connection.RemoteIpAddress?.ToString();
+            var remoteIpAddress = context.Connection.RemoteIpAddress;
+            string? remoteIp = remoteIpAddress is null
+                ? null
+                : (remoteIpAddress.IsIPv4MappedToIPv6 ? remoteIpAddress.MapToIPv4() : remoteIpAddress).ToString();
             string? userAgent = context.Request.Headers.UserAgent.ToString();
             string? forwardedFor = context.Request.Headers["X-Forwarded-For"].ToString();
 
