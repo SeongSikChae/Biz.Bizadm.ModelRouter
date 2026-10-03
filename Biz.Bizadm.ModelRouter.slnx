@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Biz.Bizadm.ModelRouter.Server/Biz.Bizadm.ModelRouter.Server.csproj" />
+  </Folder>
+</Solution>

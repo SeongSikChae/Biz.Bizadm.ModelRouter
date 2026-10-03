@@ -1,0 +1,6 @@
+@Biz.Bizadm.ModelRouter.Server_HostAddress = http://localhost:5174
+
+GET {{Biz.Bizadm.ModelRouter.Server_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
