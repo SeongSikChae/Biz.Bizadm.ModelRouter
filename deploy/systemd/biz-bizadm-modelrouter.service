@@ -1,0 +1,16 @@
+[Unit]
+Description=Bizadm Model Router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+WorkingDirectory=/ModelRouter
+ExecStart=/ModelRouter/Biz.Bizadm.ModelRouter.Server --config /ModelRouter/config.yml --log /ModelRouter/log
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+SyslogIdentifier=biz-bizadm-modelrouter
+
+[Install]
+WantedBy=multi-user.target
