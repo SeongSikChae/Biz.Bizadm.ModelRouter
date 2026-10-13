@@ -9,6 +9,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
         private const string ChatCompletionsPath = "openai/v1/chat/completions";
         private const string ResponsesPath = "openai/v1/responses";
         private const string ModelsPath = "openai/v1/models";
+        private const int MaxLoggedErrorBodyChars = 4096;
 
         private readonly HttpClient _httpClient;
         private readonly Uri _chatCompletionsUri;
@@ -181,6 +182,9 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                     (int)response.StatusCode,
                     response.Content.Headers.ContentType);
 
+                if (!response.IsSuccessStatusCode)
+                    await LogAndBufferUpstreamErrorAsync(response, path, cancellationToken);
+
                 return response;
             }
             catch (Exception ex)
@@ -196,6 +200,139 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             {
                 request.Dispose();
             }
+        }
+
+        private async Task LogAndBufferUpstreamErrorAsync(
+            HttpResponseMessage response,
+            string path,
+            CancellationToken cancellationToken)
+        {
+            string? retryAfter = GetRetryAfter(response);
+            string rateLimitHeaders = FormatRateLimitHeaders(response);
+            string? msRequestId = GetFirstHeaderValue(
+                response,
+                "x-ms-request-id",
+                "apim-request-id",
+                "x-request-id");
+
+            byte[] bodyBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+            string errorBody = TruncateForLog(Encoding.UTF8.GetString(bodyBytes));
+            TryParseUpstreamError(bodyBytes, out string? errorCode, out string? errorMessage, out string? errorType);
+
+            _logger.LogWarning(
+                "Upstream error Path={Path} StatusCode={StatusCode} RetryAfter={RetryAfter} " +
+                "RateLimitHeaders={RateLimitHeaders} MsRequestId={MsRequestId} " +
+                "ErrorCode={ErrorCode} ErrorType={ErrorType} ErrorMessage={ErrorMessage} ErrorBody={ErrorBody}",
+                path,
+                (int)response.StatusCode,
+                retryAfter ?? "-",
+                string.IsNullOrEmpty(rateLimitHeaders) ? "-" : rateLimitHeaders,
+                msRequestId ?? "-",
+                errorCode ?? "-",
+                errorType ?? "-",
+                errorMessage ?? "-",
+                string.IsNullOrEmpty(errorBody) ? "-" : errorBody);
+
+            System.Net.Http.Headers.MediaTypeHeaderValue? contentType = response.Content.Headers.ContentType;
+            response.Content.Dispose();
+            response.Content = new ByteArrayContent(bodyBytes);
+            if (contentType is not null)
+                response.Content.Headers.ContentType = contentType;
+        }
+
+        private static string? GetRetryAfter(HttpResponseMessage response)
+        {
+            if (response.Headers.RetryAfter?.Delta is TimeSpan delta)
+                return ((int)Math.Ceiling(delta.TotalSeconds)).ToString();
+
+            if (response.Headers.RetryAfter?.Date is DateTimeOffset date)
+                return date.ToString("O");
+
+            if (response.Headers.TryGetValues("Retry-After", out IEnumerable<string>? values))
+                return string.Join(",", values);
+
+            return null;
+        }
+
+        private static string FormatRateLimitHeaders(HttpResponseMessage response)
+        {
+            List<string> parts = new List<string>();
+            foreach (KeyValuePair<string, IEnumerable<string>> header in response.Headers)
+            {
+                if (!header.Key.StartsWith("x-ratelimit-", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                parts.Add($"{header.Key}={string.Join(",", header.Value)}");
+            }
+
+            foreach (KeyValuePair<string, IEnumerable<string>> header in response.Content.Headers)
+            {
+                if (!header.Key.StartsWith("x-ratelimit-", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                parts.Add($"{header.Key}={string.Join(",", header.Value)}");
+            }
+
+            return string.Join("; ", parts);
+        }
+
+        private static string? GetFirstHeaderValue(HttpResponseMessage response, params string[] names)
+        {
+            foreach (string name in names)
+            {
+                if (response.Headers.TryGetValues(name, out IEnumerable<string>? values))
+                {
+                    string? value = values.FirstOrDefault();
+                    if (!string.IsNullOrWhiteSpace(value))
+                        return value;
+                }
+            }
+
+            return null;
+        }
+
+        private static void TryParseUpstreamError(
+            byte[] bodyBytes,
+            out string? errorCode,
+            out string? errorMessage,
+            out string? errorType)
+        {
+            errorCode = null;
+            errorMessage = null;
+            errorType = null;
+
+            if (!TryParseObject(bodyBytes, out JsonObject? root) || root is null)
+                return;
+
+            if (root["error"] is not JsonObject error)
+                return;
+
+            errorCode = GetJsonString(error, "code");
+            errorMessage = GetJsonString(error, "message");
+            errorType = GetJsonString(error, "type");
+        }
+
+        private static string? GetJsonString(JsonObject obj, string propertyName)
+        {
+            if (obj[propertyName] is not JsonValue value)
+                return null;
+
+            if (value.TryGetValue(out string? text) && !string.IsNullOrWhiteSpace(text))
+                return text;
+
+            return value.ToString();
+        }
+
+        private static string TruncateForLog(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return string.Empty;
+
+            text = text.Trim();
+            if (text.Length <= MaxLoggedErrorBodyChars)
+                return text;
+
+            return text[..MaxLoggedErrorBodyChars] + "...(truncated)";
         }
 
         private static Dictionary<string, string> BuildReasoningEffortLookup(

@@ -7,6 +7,9 @@ Azure AI Foundry의 OpenAI 호환 API를 프록시하는 ASP.NET Core 서버입�
 - `chat/completions` 요청을 Azure AI Foundry로 전달
 - Responses API를 직접 호출하고 응답을 그대로 전달
 - 모델 목록 및 단일 모델 정보 조회
+- tool call id 양방향 매핑 (요청 단위)
+  - Foundry 64자 제한을 피하기 위해 요청의 `tool_calls[].id` / `tool_call_id` / `call_id`를 임의 short id로 치환
+  - 동일 요청–응답에서 맵에 있는 id는 비스트리밍·SSE 응답 모두 클라이언트 원본 id로 복원
 - 모델별 reasoning effort 주입
   - `chat/completions`에 function tools가 있으면 `reasoning_effort: none` 강제
   - tools가 없으면 `ReasoningEffortByModel` 값을 `reasoning_effort`로 주입
