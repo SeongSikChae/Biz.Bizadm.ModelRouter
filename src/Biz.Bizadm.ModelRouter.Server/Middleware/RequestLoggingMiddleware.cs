@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace Biz.Bizadm.ModelRouter.Server.Middleware
 {
     public sealed class RequestLoggingMiddleware
@@ -28,15 +30,53 @@ namespace Biz.Bizadm.ModelRouter.Server.Middleware
             if (string.IsNullOrWhiteSpace(forwardedFor))
                 forwardedFor = null;
 
+            string requestId = context.TraceIdentifier;
+            Stopwatch timer = Stopwatch.StartNew();
+            using IDisposable? scope = _logger.BeginScope(new Dictionary<string, object> { ["RequestId"] = requestId });
+            context.Response.Headers["X-Request-Id"] = requestId;
             _logger.LogInformation(
-                "Request {Method} {Path} from {RemoteIp} User-Agent={UserAgent} X-Forwarded-For={ForwardedFor}",
-                method,
-                path,
-                remoteIp ?? "-",
-                userAgent ?? "-",
-                forwardedFor ?? "-");
+                "Request {RequestId} {Method} {Path} from {RemoteIp} User-Agent={UserAgent} X-Forwarded-For={ForwardedFor}",
+                requestId, method, path, remoteIp ?? "-", userAgent ?? "-", forwardedFor ?? "-");
 
-            await _next(context);
+            using CancellationTokenRegistration registration = context.RequestAborted.Register(() =>
+                _logger.LogWarning(
+                    "Request client disconnected RequestId={RequestId} ElapsedMs={ElapsedMs} ResponseStarted={ResponseStarted}",
+                    requestId, timer.ElapsedMilliseconds, context.Response.HasStarted));
+            try
+            {
+                await _next(context);
+            }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+            {
+                _logger.LogWarning(
+                    "Request cancelled RequestId={RequestId} ElapsedMs={ElapsedMs} ResponseStarted={ResponseStarted}",
+                    requestId, timer.ElapsedMilliseconds, context.Response.HasStarted);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Request failed RequestId={RequestId} ElapsedMs={ElapsedMs} ResponseStarted={ResponseStarted} ClientAborted={ClientAborted}",
+                    requestId,
+                    timer.ElapsedMilliseconds,
+                    context.Response.HasStarted,
+                    context.RequestAborted.IsCancellationRequested);
+
+                if (context.Response.HasStarted)
+                    context.Abort();
+                throw;
+            }
+            finally
+            {
+                _logger.LogInformation(
+                    "Request ended RequestId={RequestId} StatusCode={StatusCode} ElapsedMs={ElapsedMs} ResponseStarted={ResponseStarted} ClientAborted={ClientAborted}",
+                    requestId,
+                    context.Response.StatusCode,
+                    timer.ElapsedMilliseconds,
+                    context.Response.HasStarted,
+                    context.RequestAborted.IsCancellationRequested);
+            }
         }
     }
 }

@@ -40,11 +40,6 @@ namespace Biz.Bizadm.ModelRouter.Server
 
         private static WebApplication CreateWebApplication(string[] args, CmdMain cmdMain, Configuration configuration)
         {
-            X509Certificate2 certificate = X509CertificateLoader.LoadPkcs12FromFile(
-                new FileInfo(Path.Combine(configuration.ContentRootPath, configuration.ServerCertificate)).FullName,
-                configuration.ServerCertificatePassword
-            );
-
             WebApplicationBuilder builder = WebApplication.CreateBuilder(new WebApplicationOptions
             {
                 Args = args,
@@ -58,13 +53,13 @@ namespace Biz.Bizadm.ModelRouter.Server
                     .Enrich.WithCaller()
                     .WriteTo.Console(
                         Serilog.Events.LogEventLevel.Information,
-                        CallerEnricherOutputTemplate.Default
+                        "[RequestId={RequestId}] " + CallerEnricherOutputTemplate.Default
                     )
                     .WriteTo.File(
                         new DirectoryInfo(cmdMain.LogDirPath).FullName,
                         "Biz.Bizadm.ModelRouter.Server.log",
                         Serilog.Events.LogEventLevel.Information,
-                        CallerEnricherOutputTemplate.Default,
+                        "[RequestId={RequestId}] " + CallerEnricherOutputTemplate.Default,
                         rollingInterval: RollingInterval.Day,
                         retainedFileCountLimit: 12
                     );
@@ -74,67 +69,75 @@ namespace Biz.Bizadm.ModelRouter.Server
             {
                 options.ListenAnyIP(configuration.Port!.Value, configure =>
                 {
-                    configure.Protocols = HttpProtocols.Http1;
-                    //configure.UseHttps(httpsOptions =>
-                    //{
-                    //    httpsOptions.ServerCertificate = certificate;
+                    configure.Protocols = HttpProtocols.Http1AndHttp2AndHttp3;
+                    if (configuration.UseSsl!.Value)
+                    {
+                        X509Certificate2 certificate = X509CertificateLoader.LoadPkcs12FromFile(
+                            new FileInfo(Path.Combine(configuration.ContentRootPath, configuration.ServerCertificate)).FullName,
+                            configuration.ServerCertificatePassword
+                        );
 
-                    //    if (configuration.CertificateChain is not null)
-                    //    {
-                    //        X509Certificate2Collection collection = X509CertificateLoader.LoadPkcs12CollectionFromFile(
-                    //            new FileInfo(Path.Combine(configuration.ContentRootPath, configuration.ServerCertificate)).FullName,
-                    //            configuration.ServerCertificatePassword
-                    //        );
+                        configure.UseHttps(httpsOptions =>
+                        {
+                            httpsOptions.ServerCertificate = certificate;
 
-                    //        Dictionary<string, X509Certificate2> certificates = new Dictionary<string, X509Certificate2>();
-                    //        foreach (X509Certificate2 certificate in collection.Where(cert => !cert.HasPrivateKey))
-                    //        {
-                    //            string name = certificate.GetNameInfo(X509NameType.SimpleName, false);
-                    //            certificates.Add(name, certificate);
-                    //        }
+                            if (configuration.CertificateChain is not null)
+                            {
+                                X509Certificate2Collection collection = X509CertificateLoader.LoadPkcs12CollectionFromFile(
+                                    new FileInfo(Path.Combine(configuration.ContentRootPath, configuration.ServerCertificate)).FullName,
+                                    configuration.ServerCertificatePassword
+                                );
 
-                    //        string[] certificateChain =
-                    //            configuration.CertificateChain.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                                Dictionary<string, X509Certificate2> certificates = new Dictionary<string, X509Certificate2>();
+                                foreach (X509Certificate2 certificate in collection.Where(cert => !cert.HasPrivateKey))
+                                {
+                                    string name = certificate.GetNameInfo(X509NameType.SimpleName, false);
+                                    certificates.Add(name, certificate);
+                                }
 
-                    //        httpsOptions.ServerCertificateChain = new X509Certificate2Collection();
+                                string[] certificateChain =
+                                    configuration.CertificateChain.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
 
-                    //        foreach (string name in certificateChain)
-                    //        {
-                    //            if (certificates.TryGetValue(name, out X509Certificate2? certificate))
-                    //                httpsOptions.ServerCertificateChain.Add(certificate);
-                    //        }
-                    //    }
+                                httpsOptions.ServerCertificateChain = new X509Certificate2Collection();
 
-                    //    httpsOptions.SslProtocols = SslProtocols.Tls12;
-                    //    if (configuration.IncludeCipherSuites is not null)
-                    //    {
-                    //        string[] includeCipherSuites =
-                    //        configuration.IncludeCipherSuites.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                                foreach (string name in certificateChain)
+                                {
+                                    if (certificates.TryGetValue(name, out X509Certificate2? certificate))
+                                        httpsOptions.ServerCertificateChain.Add(certificate);
+                                }
+                            }
 
-                    //        if (includeCipherSuites.Length > 0)
-                    //        {
-                    //            httpsOptions.OnAuthenticate = (connectionContext, authenticationOptions) =>
-                    //            {
-                    //                authenticationOptions.AllowRenegotiation = false;
-                    //                HashSet<TlsCipherSuite> tlsCipherSuites = new HashSet<TlsCipherSuite>();
-                    //                foreach (string cipherSuite in includeCipherSuites)
-                    //                {
-                    //                    if (Enum.TryParse(cipherSuite, out TlsCipherSuite tlsCipherSuite))
-                    //                        tlsCipherSuites.Add(tlsCipherSuite);
-                    //                }
+                            httpsOptions.SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
+                            if (configuration.IncludeCipherSuites is not null)
+                            {
+                                string[] includeCipherSuites =
+                                configuration.IncludeCipherSuites.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+
+                                if (includeCipherSuites.Length > 0)
+                                {
+                                    httpsOptions.OnAuthenticate = (connectionContext, authenticationOptions) =>
+                                    {
+                                        authenticationOptions.AllowRenegotiation = false;
+                                        HashSet<TlsCipherSuite> tlsCipherSuites = new HashSet<TlsCipherSuite>();
+                                        foreach (string cipherSuite in includeCipherSuites)
+                                        {
+                                            if (Enum.TryParse(cipherSuite, out TlsCipherSuite tlsCipherSuite))
+                                                tlsCipherSuites.Add(tlsCipherSuite);
+                                        }
 
 
-                    //                if (tlsCipherSuites.Count > 0)
-                    //                    authenticationOptions.CipherSuitesPolicy = new CipherSuitesPolicy(tlsCipherSuites);
-                    //            };
-                    //        }
-                    //    }
-                    //});
+                                        if (tlsCipherSuites.Count > 0)
+                                            authenticationOptions.CipherSuitesPolicy = new CipherSuitesPolicy(tlsCipherSuites);
+                                    };
+                                }
+                            }
+                        });
+                    }
                 });
 
                 options.ConfigureEndpointDefaults(configureOptions =>
                 {
-                    configureOptions.Protocols = HttpProtocols.Http1;
+                    configureOptions.Protocols = HttpProtocols.Http1AndHttp2AndHttp3;
                 });
             });
 

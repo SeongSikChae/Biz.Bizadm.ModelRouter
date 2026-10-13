@@ -1,0 +1,17 @@
+---
+ContentRootPath: "/ModelRouter" # 콘텐츠 루트 (인증서 등 상대 경로의 기준)
+Port: 80 # 수신 포트
+# UseSsl: false # HTTPS 사용 여부 (기본값: false)
+# ServerCertificate: "server.pfx" # PKCS#12/PFX 인증서 (ContentRootPath 기준 상대 경로 또는 절대 경로)
+# ServerCertificatePassword: "replace-with-certificate-password"
+# CertificateChain: "" # 선택: 인증서 체인에 포함할 인증서 SimpleName (쉼표 구분)
+# IncludeCipherSuites: "TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256" # 선택: 허용할 TLS 암호 스위트 (쉼표 구분, TlsCipherSuite enum 이름)
+OpenAIEndpoint: "https://YOUR-RESOURCE.services.ai.azure.com" # Azure AI Foundry OpenAI 호환 엔드포인트 (openai/v1 경로 제외)
+OpenAIKey: "replace-with-foundry-api-key"
+
+# 선택: 모델별 reasoning effort
+# chat/completions: reasoning_effort (function tools가 있으면 none 강제)
+# responses: reasoning.effort
+ReasoningEffortByModel:
+  Bizadm-GPT-6-LUNA: "medium"
+  Bizadm-GPT-6.1-SOL: "medium"

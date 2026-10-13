@@ -1,5 +1,3 @@
-using System.Net;
-using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -18,11 +16,15 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
         private readonly Uri _modelsUri;
         private readonly string _endpoint;
         private readonly Dictionary<string, string> _reasoningEffortByModel;
+        private readonly ILogger<AzureFoundryChatClient> _logger;
 
-        public AzureFoundryChatClient(HttpClient httpClient, Configuration configuration)
+        public AzureFoundryChatClient(
+            HttpClient httpClient,
+            Configuration configuration,
+            ILogger<AzureFoundryChatClient> logger)
         {
             _httpClient = httpClient;
-
+            _logger = logger;
             _endpoint = configuration.OpenAIEndpoint.TrimEnd('/');
             _chatCompletionsUri = new Uri($"{_endpoint}/{ChatCompletionsPath}");
             _responsesUri = new Uri($"{_endpoint}/{ResponsesPath}");
@@ -37,92 +39,104 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
         {
             using MemoryStream bufferedBody = new MemoryStream();
             await requestBody.CopyToAsync(bufferedBody, cancellationToken);
-            bufferedBody.Position = 0;
-
             byte[] original = bufferedBody.ToArray();
-            if (!TryParseObject(original, out JsonObject? rootObject) || rootObject is null)
-                return await PostRawAsync(_chatCompletionsUri, original, contentType, cancellationToken);
+            byte[] payload = original;
 
-            if (!HasFunctionTools(rootObject)
-                || !TryGetModelName(rootObject, out string? model)
-                || model is null
-                || !_reasoningEffortByModel.TryGetValue(model, out string? effort))
+            if (TryParseObject(original, out JsonObject? root) && root is not null)
             {
-                return await PostRawAsync(_chatCompletionsUri, original, contentType, cancellationToken);
+                // function tools + non-none reasoning_effort is rejected by Foundry on chat/completions
+                if (HasFunctionTools(root))
+                {
+                    payload = ApplyChatReasoningEffort(root, "none", original);
+                }
+                else if (TryGetModelName(root, out string? model)
+                    && model is not null
+                    && _reasoningEffortByModel.TryGetValue(model, out string? effort)
+                    && !string.IsNullOrWhiteSpace(effort))
+                {
+                    payload = ApplyChatReasoningEffort(root, effort, original);
+                }
             }
 
-            // none: chat/completions + tools는 reasoning_effort=none만 허용
-            if (string.Equals(effort, "none", StringComparison.OrdinalIgnoreCase))
-            {
-                byte[] payload = EnsureReasoningEffort(rootObject, original, effort);
-                return await PostRawAsync(_chatCompletionsUri, payload, contentType, cancellationToken);
-            }
-
-            // none이 아니면 tools + reasoning을 Responses API로 우회 후 chat 형식으로 되돌림
-            return await ForwardViaResponsesAsync(rootObject, effort, contentType, cancellationToken);
+            return await PostRawAsync(_chatCompletionsUri, payload, contentType, cancellationToken);
         }
 
-        private async Task<HttpResponseMessage> ForwardViaResponsesAsync(
-            JsonObject chatRoot,
-            string reasoningEffort,
+        public Task<HttpResponseMessage> ForwardResponsesAsync(
+            Stream requestBody,
             string? contentType,
             CancellationToken cancellationToken)
-        {
-            string? modelHint = chatRoot["model"]?.GetValue<string>();
-            bool stream = chatRoot["stream"] is JsonValue streamValue
-                && streamValue.TryGetValue(out bool streamEnabled)
-                && streamEnabled;
-
-            byte[] responsesPayload = ChatResponsesBridge.ToResponsesRequest(chatRoot, reasoningEffort);
-
-            HttpResponseMessage upstream = await PostRawAsync(
+            => PostWithReasoningAsync(
                 _responsesUri,
-                responsesPayload,
+                requestBody,
                 contentType,
+                ApplyResponsesReasoningEffort,
                 cancellationToken);
 
-            if (!upstream.IsSuccessStatusCode)
-                return upstream;
+        public Task<HttpResponseMessage> ForwardModelsAsync(CancellationToken cancellationToken)
+        {
+            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, _modelsUri);
+            return SendAsync(request, cancellationToken);
+        }
 
-            if (!stream)
+        public Task<HttpResponseMessage> ForwardModelAsync(string model, CancellationToken cancellationToken)
+        {
+            Uri modelUri = new Uri($"{_endpoint}/{ModelsPath}/{Uri.EscapeDataString(model)}");
+            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, modelUri);
+            return SendAsync(request, cancellationToken);
+        }
+
+        private async Task<HttpResponseMessage> PostWithReasoningAsync(
+            Uri uri,
+            Stream requestBody,
+            string? contentType,
+            Func<JsonObject, string, byte[], byte[]> applyReasoning,
+            CancellationToken cancellationToken)
+        {
+            using MemoryStream bufferedBody = new MemoryStream();
+            await requestBody.CopyToAsync(bufferedBody, cancellationToken);
+            byte[] original = bufferedBody.ToArray();
+            byte[] payload = original;
+
+            if (TryParseObject(original, out JsonObject? root)
+                && root is not null
+                && TryGetModelName(root, out string? model)
+                && model is not null
+                && _reasoningEffortByModel.TryGetValue(model, out string? effort)
+                && !string.IsNullOrWhiteSpace(effort))
             {
-                byte[] responsesBody = await upstream.Content.ReadAsByteArrayAsync(cancellationToken);
-                upstream.Dispose();
-
-                if (!TryParseObject(responsesBody, out JsonObject? responsesRoot) || responsesRoot is null)
-                {
-                    return new HttpResponseMessage(System.Net.HttpStatusCode.BadGateway)
-                    {
-                        Content = new ByteArrayContent(responsesBody)
-                        {
-                            Headers = { ContentType = new MediaTypeHeaderValue("application/json") }
-                        }
-                    };
-                }
-
-                byte[] chatBody = ChatResponsesBridge.ToChatCompletionResponse(responsesRoot);
-                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
-                {
-                    Content = new ByteArrayContent(chatBody)
-                    {
-                        Headers = { ContentType = new MediaTypeHeaderValue("application/json") }
-                    }
-                };
+                payload = applyReasoning(root, effort, original);
             }
 
-            Stream upstreamStream = await upstream.Content.ReadAsStreamAsync(cancellationToken);
-            SseTransformContent transformed = new SseTransformContent(
-                upstream,
-                upstreamStream,
-                modelHint,
-                cancellationToken);
+            return await PostRawAsync(uri, payload, contentType, cancellationToken);
+        }
 
-            HttpResponseMessage response = new HttpResponseMessage(upstream.StatusCode)
+        private static byte[] ApplyChatReasoningEffort(JsonObject root, string effort, byte[] original)
+        {
+            if (root["reasoning_effort"] is JsonValue value
+                && value.TryGetValue(out string? current)
+                && string.Equals(current, effort, StringComparison.OrdinalIgnoreCase))
             {
-                Content = transformed
-            };
-            response.Content.Headers.ContentType = new MediaTypeHeaderValue("text/event-stream");
-            return response;
+                return original;
+            }
+
+            root["reasoning_effort"] = effort;
+            return Encoding.UTF8.GetBytes(root.ToJsonString());
+        }
+
+        private static byte[] ApplyResponsesReasoningEffort(JsonObject root, string effort, byte[] original)
+        {
+            if (root["reasoning"] is JsonObject existingReasoning
+                && existingReasoning["effort"] is JsonValue value
+                && value.TryGetValue(out string? current)
+                && string.Equals(current, effort, StringComparison.OrdinalIgnoreCase))
+            {
+                return original;
+            }
+
+            JsonObject reasoning = root["reasoning"] as JsonObject ?? new JsonObject();
+            reasoning["effort"] = effort;
+            root["reasoning"] = reasoning;
+            return Encoding.UTF8.GetBytes(root.ToJsonString());
         }
 
         private async Task<HttpResponseMessage> PostRawAsync(
@@ -143,49 +157,44 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             return await SendAsync(request, cancellationToken);
         }
 
-        private async Task<HttpResponseMessage> PostStreamAsync(
-            Uri uri,
-            Stream requestBody,
-            string? contentType,
+        private async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            using MemoryStream bufferedBody = new MemoryStream();
-            await requestBody.CopyToAsync(bufferedBody, cancellationToken);
-            return await PostRawAsync(uri, bufferedBody.ToArray(), contentType, cancellationToken);
-        }
-
-        private static byte[] EnsureReasoningEffort(JsonObject rootObject, byte[] original, string effort)
-        {
-            JsonNode? reasoningEffort = rootObject["reasoning_effort"];
-            if (reasoningEffort is JsonValue value
-                && value.TryGetValue(out string? currentEffort)
-                && string.Equals(currentEffort, effort, StringComparison.OrdinalIgnoreCase))
-            {
-                return original;
-            }
-
-            rootObject["reasoning_effort"] = effort;
-            return Encoding.UTF8.GetBytes(rootObject.ToJsonString());
-        }
-
-        private static bool TryParseObject(byte[] payload, out JsonObject? rootObject)
-        {
-            rootObject = null;
-            if (payload.Length == 0)
-                return false;
+            string path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            _logger.LogInformation(
+                "Upstream send Method={Method} Path={Path} PayloadBytes={PayloadBytes}",
+                request.Method,
+                path,
+                request.Content?.Headers.ContentLength);
 
             try
             {
-                JsonNode? root = JsonNode.Parse(payload);
-                if (root is not JsonObject obj)
-                    return false;
+                HttpResponseMessage response = await _httpClient.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken);
 
-                rootObject = obj;
-                return true;
+                _logger.LogInformation(
+                    "Upstream headers Path={Path} StatusCode={StatusCode} ContentType={ContentType}",
+                    path,
+                    (int)response.StatusCode,
+                    response.Content.Headers.ContentType);
+
+                return response;
             }
-            catch (JsonException)
+            catch (Exception ex)
             {
-                return false;
+                _logger.LogError(
+                    ex,
+                    "Upstream send failed Path={Path} Cancelled={Cancelled}",
+                    path,
+                    cancellationToken.IsCancellationRequested);
+                throw;
+            }
+            finally
+            {
+                request.Dispose();
             }
         }
 
@@ -205,6 +214,26 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             }
 
             return lookup;
+        }
+
+        private static bool TryParseObject(byte[] payload, out JsonObject? rootObject)
+        {
+            rootObject = null;
+            if (payload.Length == 0)
+                return false;
+
+            try
+            {
+                if (JsonNode.Parse(payload) is not JsonObject obj)
+                    return false;
+
+                rootObject = obj;
+                return true;
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
         }
 
         private static bool TryGetModelName(JsonObject rootObject, out string? model)
@@ -238,104 +267,6 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             }
 
             return false;
-        }
-
-        public Task<HttpResponseMessage> ForwardResponsesAsync(
-            Stream requestBody,
-            string? contentType,
-            CancellationToken cancellationToken)
-        {
-            return PostStreamAsync(_responsesUri, requestBody, contentType, cancellationToken);
-        }
-
-        public Task<HttpResponseMessage> ForwardModelsAsync(CancellationToken cancellationToken)
-        {
-            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, _modelsUri);
-            return SendAsync(request, cancellationToken);
-        }
-
-        public Task<HttpResponseMessage> ForwardModelAsync(string model, CancellationToken cancellationToken)
-        {
-            Uri modelUri = new Uri($"{_endpoint}/{ModelsPath}/{Uri.EscapeDataString(model)}");
-            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, modelUri);
-            return SendAsync(request, cancellationToken);
-        }
-
-        private async Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken)
-        {
-            try
-            {
-                return await _httpClient.SendAsync(
-                    request,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    cancellationToken);
-            }
-            finally
-            {
-                request.Dispose();
-            }
-        }
-
-        private sealed class SseTransformContent : HttpContent
-        {
-            private readonly HttpResponseMessage _upstreamResponse;
-            private readonly Stream _upstreamStream;
-            private readonly string? _modelHint;
-            private readonly CancellationToken _cancellationToken;
-
-            public SseTransformContent(
-                HttpResponseMessage upstreamResponse,
-                Stream upstreamStream,
-                string? modelHint,
-                CancellationToken cancellationToken)
-            {
-                _upstreamResponse = upstreamResponse;
-                _upstreamStream = upstreamStream;
-                _modelHint = modelHint;
-                _cancellationToken = cancellationToken;
-            }
-
-            protected override async Task SerializeToStreamAsync(
-                Stream stream,
-                TransportContext? context)
-            {
-                try
-                {
-                    await foreach (string chunk in ChatResponsesBridge.ToChatCompletionSseAsync(
-                                       _upstreamStream,
-                                       _modelHint,
-                                       _cancellationToken))
-                    {
-                        byte[] bytes = Encoding.UTF8.GetBytes(chunk);
-                        await stream.WriteAsync(bytes, _cancellationToken);
-                        await stream.FlushAsync(_cancellationToken);
-                    }
-                }
-                finally
-                {
-                    await _upstreamStream.DisposeAsync();
-                    _upstreamResponse.Dispose();
-                }
-            }
-
-            protected override bool TryComputeLength(out long length)
-            {
-                length = -1;
-                return false;
-            }
-
-            protected override void Dispose(bool disposing)
-            {
-                if (disposing)
-                {
-                    _upstreamStream.Dispose();
-                    _upstreamResponse.Dispose();
-                }
-
-                base.Dispose(disposing);
-            }
         }
     }
 }

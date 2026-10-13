@@ -10,10 +10,13 @@ namespace Biz.Bizadm.ModelRouter.Server
         [Property(PropertyType.USHORT, required: true)]
         public ushort? Port { get; set; }
 
-        [Property(PropertyType.STRING, required: true)]
+        [Property(PropertyType.BOOL, DefaultValue = "false")]
+        public bool? UseSsl { get; set; } = null!;
+
+        [Property(PropertyType.STRING, required: true, Parent = "UseSsl")]
         public string ServerCertificate { get; set; } = null!;
 
-        [Property(PropertyType.STRING, required: true)]
+        [Property(PropertyType.STRING, required: true, Parent = "UseSsl")]
         public string ServerCertificatePassword { get; set; } = null!;
 
         [Property(PropertyType.STRING, required: false)]
@@ -29,10 +32,10 @@ namespace Biz.Bizadm.ModelRouter.Server
         public string OpenAIKey { get; set; } = null!;
 
         /// <summary>
-        /// function tools가 포함된 chat/completions 요청에서 model별 reasoning 처리.
-        /// - none: chat/completions에 reasoning_effort=none 강제
-        /// - none이 아닌 값: /v1/responses로 우회 후 chat 형식으로 변환
-        /// YAML 예 (Luna/Sol 모두 medium으로 일관 설정):
+        /// 모델별 reasoning effort 주입 (선택).
+        /// - chat/completions: 최상위 reasoning_effort (function tools가 있으면 맵 값과 무관하게 none 강제)
+        /// - responses: reasoning.effort
+        /// YAML 예:
         /// ReasoningEffortByModel:
         ///   Bizadm-GPT-6-LUNA: medium
         ///   Bizadm-GPT-6.1-SOL: medium
@@ -40,3 +43,4 @@ namespace Biz.Bizadm.ModelRouter.Server
         public Dictionary<string, string>? ReasoningEffortByModel { get; set; }
     }
 }
+
