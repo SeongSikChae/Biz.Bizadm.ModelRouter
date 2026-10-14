@@ -2,6 +2,8 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Diagnostics;
+using Microsoft.Extensions.Logging;
 
 namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
 {
@@ -62,6 +64,9 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             string model = responsesRoot["model"]?.GetValue<string>() ?? string.Empty;
             long created = responsesRoot["created_at"]?.GetValue<long>()
                 ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+            if (TryCreateErrorResponse(responsesRoot, out byte[] errorResponse))
+                return errorResponse;
 
             string? content = null;
             JsonArray? toolCalls = null;
@@ -135,8 +140,66 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             return Encoding.UTF8.GetBytes(chat.ToJsonString(CompactJson));
         }
 
+        public static bool TryCreateErrorResponse(JsonObject responsesRoot, out byte[] errorBody)
+        {
+            string? status = responsesRoot["status"]?.GetValue<string>();
+            if (!string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(status, "incomplete", StringComparison.OrdinalIgnoreCase))
+            {
+                errorBody = Array.Empty<byte>();
+                return false;
+            }
+
+            JsonObject? error = GetErrorObject(responsesRoot, status);
+            string? incompleteReason = responsesRoot["incomplete_details"]?["reason"]?.GetValue<string>();
+            errorBody = SerializeError(error, status, incompleteReason);
+            return true;
+        }
+
+        private static JsonObject? GetErrorObject(JsonObject source, string? status)
+        {
+            JsonNode? errorNode = source["error"] ?? source["response"]?["error"];
+            if (errorNode is JsonObject errorObject)
+                return (JsonObject)errorObject.DeepClone();
+
+            return null;
+        }
+
+        private static byte[] SerializeError(JsonObject? error, string? status, string? fallbackMessage = null)
+        {
+            string message = error?["message"]?.GetValue<string>()
+                ?? fallbackMessage
+                ?? $"Responses request {status ?? "failed"}.";
+            string type = error?["type"]?.GetValue<string>()
+                ?? (string.Equals(status, "incomplete", StringComparison.OrdinalIgnoreCase)
+                    ? "incomplete_response"
+                    : "server_error");
+
+            JsonObject normalizedError = new JsonObject
+            {
+                ["message"] = message,
+                ["type"] = type
+            };
+            if (error?["code"] is JsonNode code)
+                normalizedError["code"] = code.DeepClone();
+            if (error?["param"] is JsonNode param)
+                normalizedError["param"] = param.DeepClone();
+
+            return Encoding.UTF8.GetBytes(new JsonObject { ["error"] = normalizedError }.ToJsonString(CompactJson));
+        }
+
         private sealed class StreamState
         {
+            public string? TerminalType { get; set; }
+            public string? ErrorMessage { get; set; }
+            public string? ErrorType { get; set; }
+            public string? ErrorCode { get; set; }
+            public string? IncompleteReason { get; set; }
+            public bool SentError { get; set; }
+            public int EventCount { get; set; }
+            public int ChunkCount { get; set; }
+            public int ParseErrorCount { get; set; }
+
             public string CompletionId { get; } = $"chatcmpl-{Guid.NewGuid():N}";
             public long Created { get; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             public string Model { get; set; } = string.Empty;
@@ -220,90 +283,173 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
         public static async IAsyncEnumerable<string> ToChatCompletionSseAsync(
             Stream responsesSse,
             string? modelHint,
+            ILogger logger,
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
-            StreamState state = new StreamState
-            {
-                Model = modelHint ?? string.Empty
-            };
+            StreamState state = new StreamState { Model = modelHint ?? string.Empty };
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            logger.LogInformation("Bridge SSE start Model={Model}", state.Model);
 
             using StreamReader reader = new StreamReader(responsesSse, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: true);
             StringBuilder dataBuilder = new StringBuilder();
-
-            while (true)
+            bool upstreamDone = false;
+            try
             {
-                string? line = await reader.ReadLineAsync(cancellationToken);
-                if (line is null)
-                    break;
-
-                if (line.Length == 0)
+                while (!upstreamDone)
                 {
-                    if (dataBuilder.Length == 0)
-                        continue;
-
-                    string data = dataBuilder.ToString();
-                    dataBuilder.Clear();
-
-                    if (string.Equals(data, "[DONE]", StringComparison.Ordinal))
+                    string? line = await reader.ReadLineAsync(cancellationToken);
+                    if (line is null)
                         break;
 
-                    JsonNode? node;
-                    try
+                    if (line.Length == 0)
                     {
-                        node = JsonNode.Parse(data);
-                    }
-                    catch (JsonException)
-                    {
+                        if (dataBuilder.Length == 0)
+                            continue;
+
+                        string data = dataBuilder.ToString();
+                        dataBuilder.Clear();
+                        if (string.Equals(data, "[DONE]", StringComparison.Ordinal))
+                        {
+                            upstreamDone = true;
+                            break;
+                        }
+
+                        JsonNode? node;
+                        try
+                        {
+                            node = JsonNode.Parse(data);
+                        }
+                        catch (JsonException)
+                        {
+                            state.ParseErrorCount++;
+                            continue;
+                        }
+
+                        if (node is not JsonObject evt)
+                            continue;
+
+                        state.EventCount++;
+                        string? eventType = evt["type"]?.GetValue<string>();
+                        if (string.IsNullOrEmpty(eventType))
+                            continue;
+
+                        if (evt["response"]?["model"] is JsonValue modelValue
+                            && modelValue.TryGetValue(out string? responseModel)
+                            && !string.IsNullOrWhiteSpace(responseModel))
+                            state.Model = responseModel;
+
+                        bool isTerminal = IsTerminalEvent(eventType);
+                        if (isTerminal)
+                        {
+                            state.TerminalType = eventType;
+                            state.ErrorMessage = GetEventErrorMessage(evt);
+                            state.ErrorType = GetEventErrorValue(evt, "type");
+                            state.ErrorCode = GetEventErrorValue(evt, "code");
+                            state.IncompleteReason = evt["response"]?["incomplete_details"]?["reason"]?.GetValue<string>()
+                                ?? evt["incomplete_details"]?["reason"]?.GetValue<string>();
+                            if (eventType is "response.failed" or "error")
+                                logger.LogWarning("Bridge SSE terminal Type={Type} Detail={Detail}", eventType, state.ErrorMessage ?? state.ErrorCode);
+                            else if (eventType == "response.incomplete")
+                                logger.LogWarning("Bridge SSE terminal Type={Type} Detail={Detail}", eventType, state.IncompleteReason ?? state.ErrorMessage);
+                            else
+                                logger.LogInformation("Bridge SSE terminal Type={Type}", eventType);
+                        }
+
+                        foreach (JsonObject chunk in ConvertStreamEvent(eventType, evt, state))
+                        {
+                            state.ChunkCount++;
+                            if (state.ChunkCount == 1)
+                                logger.LogInformation("Bridge SSE firstDelta Kind={Kind}", chunk["choices"]?[0]?["delta"]?["tool_calls"] is not null ? "tool_calls" : "content");
+                            yield return $"data: {chunk.ToJsonString(CompactJson)}\n\n";
+                        }
+
+                        if (isTerminal && eventType != "response.completed")
+                        {
+                            upstreamDone = true;
+                            break;
+                        }
+                        if (eventType == "response.completed")
+                        {
+                            upstreamDone = true;
+                            break;
+                        }
                         continue;
                     }
 
-                    if (node is not JsonObject evt)
-                        continue;
-
-                    string? eventType = evt["type"]?.GetValue<string>();
-                    if (string.IsNullOrEmpty(eventType))
-                        continue;
-
-                    if (evt["response"]?["model"] is JsonValue modelValue
-                        && modelValue.TryGetValue(out string? responseModel)
-                        && !string.IsNullOrWhiteSpace(responseModel))
+                    if (line.StartsWith("data:", StringComparison.Ordinal))
                     {
-                        state.Model = responseModel;
+                        if (dataBuilder.Length > 0)
+                            dataBuilder.Append('\n');
+                        dataBuilder.Append(line.AsSpan(5).TrimStart());
                     }
-
-                    foreach (JsonObject chunk in ConvertStreamEvent(eventType, evt, state))
-                        yield return $"data: {chunk.ToJsonString(CompactJson)}\n\n";
-
-                    continue;
                 }
 
-                if (line.StartsWith("data:", StringComparison.Ordinal))
+                bool maxTokensReached = state.TerminalType == "response.incomplete"
+                    && string.Equals(state.IncompleteReason, "max_output_tokens", StringComparison.OrdinalIgnoreCase);
+                bool failed = state.TerminalType is "response.failed" or "error"
+                    || state.TerminalType == "response.incomplete" && !maxTokensReached
+                    || state.TerminalType is null;
+
+                if (failed)
                 {
-                    if (dataBuilder.Length > 0)
-                        dataBuilder.Append('\n');
-                    dataBuilder.Append(line.AsSpan(5).TrimStart());
+                    state.SentError = true;
+                    string message = state.ErrorMessage
+                        ?? (state.TerminalType is null ? "Responses stream ended before a terminal event." : "Responses request was incomplete.");
+                    JsonObject error = new JsonObject
+                    {
+                        ["message"] = message,
+                        ["type"] = state.ErrorType ?? (state.TerminalType == "response.incomplete" ? "incomplete_response" : "server_error")
+                    };
+                    if (!string.IsNullOrEmpty(state.ErrorCode))
+                        error["code"] = state.ErrorCode;
+                    yield return $"data: {new JsonObject { ["error"] = error }.ToJsonString(CompactJson)}\n\n";
                 }
+                else
+                {
+                    if (maxTokensReached)
+                        state.FinishReason = "length";
+
+                    JsonObject finalChunk = new JsonObject
+                    {
+                        ["id"] = state.CompletionId,
+                        ["object"] = "chat.completion.chunk",
+                        ["created"] = state.Created,
+                        ["model"] = state.Model,
+                        ["choices"] = new JsonArray
+                        {
+                            new JsonObject
+                            {
+                                ["index"] = 0,
+                                ["delta"] = new JsonObject(),
+                                ["finish_reason"] = state.FinishReason ?? "stop"
+                            }
+                        }
+                    };
+                    state.ChunkCount++;
+                    yield return $"data: {finalChunk.ToJsonString(CompactJson)}\n\n";
+                }
+
+                yield return "data: [DONE]\n\n";
             }
-
-            JsonObject finalChunk = new JsonObject
+            finally
             {
-                ["id"] = state.CompletionId,
-                ["object"] = "chat.completion.chunk",
-                ["created"] = state.Created,
-                ["model"] = state.Model,
-                ["choices"] = new JsonArray
-                {
-                    new JsonObject
-                    {
-                        ["index"] = 0,
-                        ["delta"] = new JsonObject(),
-                        ["finish_reason"] = state.FinishReason ?? "stop"
-                    }
-                }
-            };
-            yield return $"data: {finalChunk.ToJsonString(CompactJson)}\n\n";
-            yield return "data: [DONE]\n\n";
+                logger.LogInformation(
+                    "Bridge SSE end Model={Model} Events={Events} Chunks={Chunks} FinishReason={FinishReason} Terminal={Terminal} SentError={SentError} ParseErrors={ParseErrors} ElapsedMs={ElapsedMs}",
+                    state.Model, state.EventCount, state.ChunkCount, state.FinishReason, state.TerminalType, state.SentError, state.ParseErrorCount, stopwatch.ElapsedMilliseconds);
+            }
         }
+
+        private static bool IsTerminalEvent(string eventType) =>
+            eventType is "response.completed" or "response.failed" or "response.incomplete" or "error";
+
+        private static string? GetEventErrorMessage(JsonObject evt) =>
+            evt["response"]?["error"]?["message"]?.GetValue<string>()
+            ?? evt["error"]?["message"]?.GetValue<string>()
+            ?? evt["message"]?.GetValue<string>();
+
+        private static string? GetEventErrorValue(JsonObject evt, string property) =>
+            evt["response"]?["error"]?[property]?.GetValue<string>()
+            ?? evt["error"]?[property]?.GetValue<string>();
 
         private static IEnumerable<JsonObject> ConvertStreamEvent(
             string eventType,

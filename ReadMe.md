@@ -97,6 +97,8 @@ ReasoningByModel:
 | `ForceNone` | chat에 `reasoning_effort: none`. LUNA의 지연/비용 우선 저하 경로. `SupportsNone: false`면 bridge로 폴백 |
 | `PassThrough` | none 강제 없음. `Effort`만 선택 주입 |
 
+BridgeToResponses 스트림은 `response.failed`/`error` 및 토큰 한도 이외의 `response.incomplete`를 OpenAI 호환 SSE 오류 이벤트로 전달하며, 로그에 `Bridge SSE start`, `terminal`, `end`와 이벤트·청크 수를 기록합니다. `max_output_tokens` 종료는 `finish_reason: length`로 전달됩니다. 비스트리밍 `failed`/`incomplete` 응답은 HTTP 502와 JSON 오류 본문으로 반환됩니다.
+
 모델명은 대소문자를 구분하지 않습니다. `SupportsNone: false`인데 Effort가 `none`이면 허용된 최저 단계인 `low`로 보정합니다. 맵에 없거나 JSON을 파싱할 수 없으면 요청 바디를 그대로 전달합니다. `reasoning.summary` / `reasoning.mode` 등 다른 필드는 변경하지 않습니다.
 
 > **주의:** API 라우트 자체에는 인증이 없습니다. `UseSsl`이 꺼져 있으면 HTTP로 수신하므로, 외부에 노출할 때는 TLS·인증을 제공하는 프록시/게이트웨이 뒤에 두거나 `UseSsl: true`로 HTTPS를 켜세요.

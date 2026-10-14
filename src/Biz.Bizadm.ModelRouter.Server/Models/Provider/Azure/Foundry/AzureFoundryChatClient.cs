@@ -234,6 +234,21 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                     };
                 }
 
+                if (ChatResponsesBridge.TryCreateErrorResponse(responsesRoot, out byte[] upstreamErrorBody))
+                {
+                    _logger.LogWarning(
+                        "Responses request returned terminal failure Model={Model} Status={Status}",
+                        modelHint,
+                        responsesRoot["status"]?.GetValue<string>());
+                    return new HttpResponseMessage(HttpStatusCode.BadGateway)
+                    {
+                        Content = new ByteArrayContent(upstreamErrorBody)
+                        {
+                            Headers = { ContentType = new MediaTypeHeaderValue("application/json") }
+                        }
+                    };
+                }
+
                 byte[] chatBody = ChatResponsesBridge.ToChatCompletionResponse(responsesRoot);
                 if (TryParseObject(chatBody, out JsonObject? chatRootObject)
                     && chatRootObject is not null
@@ -257,6 +272,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 upstreamStream,
                 modelHint,
                 mapper,
+                _logger,
                 cancellationToken);
 
             HttpResponseMessage response = new HttpResponseMessage(upstream.StatusCode)
@@ -639,6 +655,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             private readonly Stream _upstreamStream;
             private readonly string? _modelHint;
             private readonly ToolCallIdMapper _mapper;
+            private readonly ILogger<AzureFoundryChatClient> _logger;
             private readonly CancellationToken _cancellationToken;
 
             public SseTransformContent(
@@ -646,12 +663,14 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 Stream upstreamStream,
                 string? modelHint,
                 ToolCallIdMapper mapper,
+                ILogger<AzureFoundryChatClient> logger,
                 CancellationToken cancellationToken)
             {
                 _upstreamResponse = upstreamResponse;
                 _upstreamStream = upstreamStream;
                 _modelHint = modelHint;
                 _mapper = mapper;
+                _logger = logger;
                 _cancellationToken = cancellationToken;
             }
 
@@ -664,6 +683,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                     await foreach (string chunk in ChatResponsesBridge.ToChatCompletionSseAsync(
                                        _upstreamStream,
                                        _modelHint,
+                                       _logger,
                                        _cancellationToken))
                     {
                         string output = ApplyMapperToBridgeSseEvent(chunk, _mapper);
