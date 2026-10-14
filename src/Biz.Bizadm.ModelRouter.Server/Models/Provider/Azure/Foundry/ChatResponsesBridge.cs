@@ -212,6 +212,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             public Dictionary<int, string> ToolCallIdsByIndex { get; } = new();
             public int NextToolIndex { get; set; }
             public string? FinishReason { get; set; }
+            public JsonObject? Usage { get; set; }
 
             public int RegisterFunctionCall(string? itemId, string? callId)
             {
@@ -280,9 +281,335 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             }
         }
 
+        /// <summary>
+        /// 출력 청크 전에 도착한 rate-limit 실패를 HTTP 429로 올릴 수 있게 Responses SSE를 선조회한다.
+        /// rate-limit이 아니면 소비한 바이트를 앞에 붙인 스트림을 반환해 기존 브리지를 그대로 사용한다.
+        /// </summary>
+        public static async Task<EarlyStreamPeekResult> PeekEarlyRateLimitFailureAsync(
+            Stream responsesSse,
+            ILogger logger,
+            CancellationToken cancellationToken)
+        {
+            const int maxPeekBytes = 64 * 1024;
+            MemoryStream peeked = new MemoryStream();
+            byte[] readBuffer = new byte[8192];
+            int searchFrom = 0;
+            int parsedEvents = 0;
+
+            while (peeked.Length < maxPeekBytes)
+            {
+                int read = await responsesSse.ReadAsync(readBuffer.AsMemory(0, readBuffer.Length), cancellationToken);
+                if (read == 0)
+                    break;
+
+                peeked.Write(readBuffer, 0, read);
+
+                while (TryReadNextSseData(peeked, ref searchFrom, out string? data))
+                {
+                    if (data is null)
+                        continue;
+
+                    if (string.Equals(data, "[DONE]", StringComparison.Ordinal))
+                        return EarlyStreamPeekResult.Continue(CreatePrefixedStream(peeked, responsesSse));
+
+                    JsonNode? node;
+                    try
+                    {
+                        node = JsonNode.Parse(data);
+                    }
+                    catch (JsonException)
+                    {
+                        continue;
+                    }
+
+                    if (node is not JsonObject evt)
+                        continue;
+
+                    parsedEvents++;
+                    string? eventType = evt["type"]?.GetValue<string>();
+                    if (string.IsNullOrEmpty(eventType))
+                        continue;
+
+                    if (IsBridgeProgressEvent(eventType, evt))
+                        return EarlyStreamPeekResult.Continue(CreatePrefixedStream(peeked, responsesSse));
+
+                    if (!IsTerminalEvent(eventType))
+                        continue;
+
+                    bool maxTokensReached = eventType == "response.incomplete"
+                        && string.Equals(
+                            evt["response"]?["incomplete_details"]?["reason"]?.GetValue<string>()
+                                ?? evt["incomplete_details"]?["reason"]?.GetValue<string>(),
+                            "max_output_tokens",
+                            StringComparison.OrdinalIgnoreCase);
+
+                    if (eventType == "response.completed" || maxTokensReached)
+                        return EarlyStreamPeekResult.Continue(CreatePrefixedStream(peeked, responsesSse));
+
+                    string? errorMessage = GetEventErrorMessage(evt);
+                    string? errorType = GetEventErrorValue(evt, "type");
+                    string? errorCode = GetEventErrorValue(evt, "code");
+
+                    if (!IsRateLimitError(errorCode, errorType, errorMessage))
+                        return EarlyStreamPeekResult.Continue(CreatePrefixedStream(peeked, responsesSse));
+
+                    byte[] errorBody = SerializeError(
+                        BuildErrorObject(errorMessage, errorType, errorCode),
+                        status: "failed");
+
+                    logger.LogWarning(
+                        "Bridge SSE early rate-limit failure Type={Type} Code={Code} Detail={Detail} PeekedEvents={PeekedEvents} PeekedBytes={PeekedBytes}",
+                        eventType,
+                        errorCode,
+                        errorMessage,
+                        parsedEvents,
+                        peeked.Length);
+
+                    await responsesSse.DisposeAsync();
+                    await peeked.DisposeAsync();
+                    return EarlyStreamPeekResult.RateLimit(errorBody);
+                }
+            }
+
+            logger.LogDebug(
+                "Bridge SSE early peek ended without rate-limit decision PeekedEvents={PeekedEvents} PeekedBytes={PeekedBytes}",
+                parsedEvents,
+                peeked.Length);
+            return EarlyStreamPeekResult.Continue(CreatePrefixedStream(peeked, responsesSse));
+        }
+
+        internal readonly struct EarlyStreamPeekResult
+        {
+            public byte[]? RateLimitErrorBody { get; private init; }
+            public Stream? ContinueStream { get; private init; }
+
+            public static EarlyStreamPeekResult RateLimit(byte[] errorBody) => new()
+            {
+                RateLimitErrorBody = errorBody
+            };
+
+            public static EarlyStreamPeekResult Continue(Stream stream) => new()
+            {
+                ContinueStream = stream
+            };
+        }
+
+        private static Stream CreatePrefixedStream(MemoryStream peeked, Stream remainder)
+        {
+            byte[] prefix = peeked.ToArray();
+            peeked.Dispose();
+            if (prefix.Length == 0)
+                return remainder;
+
+            return new PrefixedStream(prefix, remainder);
+        }
+
+        private static bool TryReadNextSseData(MemoryStream buffer, ref int searchFrom, out string? data)
+        {
+            data = null;
+            byte[] bytes = buffer.GetBuffer();
+            int length = (int)buffer.Length;
+
+            for (int i = searchFrom; i < length - 1; i++)
+            {
+                int delimiterLength = GetSseEventDelimiterLength(bytes, i, length);
+                if (delimiterLength == 0)
+                    continue;
+
+                string block = Encoding.UTF8.GetString(bytes, searchFrom, i - searchFrom);
+                searchFrom = i + delimiterLength;
+
+                StringBuilder dataBuilder = new StringBuilder();
+                using StringReader reader = new StringReader(block);
+                string? line;
+                while ((line = reader.ReadLine()) is not null)
+                {
+                    if (!line.StartsWith("data:", StringComparison.Ordinal))
+                        continue;
+
+                    if (dataBuilder.Length > 0)
+                        dataBuilder.Append('\n');
+                    dataBuilder.Append(line.AsSpan(5).TrimStart());
+                }
+
+                if (dataBuilder.Length == 0)
+                {
+                    data = null;
+                    return true;
+                }
+
+                data = dataBuilder.ToString();
+                return true;
+            }
+
+            return false;
+        }
+
+        private static int GetSseEventDelimiterLength(byte[] bytes, int index, int length)
+        {
+            if (bytes[index] == (byte)'\n' && bytes[index + 1] == (byte)'\n')
+                return 2;
+
+            if (bytes[index] == (byte)'\r'
+                && bytes[index + 1] == (byte)'\n'
+                && index + 3 < length
+                && bytes[index + 2] == (byte)'\r'
+                && bytes[index + 3] == (byte)'\n')
+            {
+                return 4;
+            }
+
+            return 0;
+        }
+
+        private static bool IsBridgeProgressEvent(string eventType, JsonObject evt)
+        {
+            if (string.Equals(eventType, "response.output_text.delta", StringComparison.Ordinal)
+                || string.Equals(eventType, "response.function_call_arguments.delta", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (!string.Equals(eventType, "response.output_item.added", StringComparison.Ordinal))
+                return false;
+
+            string? itemType = evt["item"]?["type"]?.GetValue<string>();
+            return string.Equals(itemType, "function_call", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static bool IsRateLimitError(string? code, string? type, string? message)
+        {
+            static bool Contains(string? value, string token) =>
+                !string.IsNullOrEmpty(value)
+                && value.Contains(token, StringComparison.OrdinalIgnoreCase);
+
+            if (Contains(code, "rate_limit")
+                || Contains(code, "RateLimit")
+                || string.Equals(code, "429", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (Contains(type, "rate_limit")
+                || string.Equals(type, "tokens", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return Contains(message, "rate limit")
+                || Contains(message, "RateLimitReached")
+                || Contains(message, "token rate limit")
+                || Contains(message, "tokens per minute")
+                || Contains(message, "TPM");
+        }
+
+        private static JsonObject BuildErrorObject(string? message, string? type, string? code)
+        {
+            JsonObject error = new JsonObject
+            {
+                ["message"] = message ?? "Token rate limit exceeded.",
+                ["type"] = type ?? "rate_limit_exceeded"
+            };
+            if (!string.IsNullOrEmpty(code))
+                error["code"] = code;
+            return error;
+        }
+
+        private sealed class PrefixedStream : Stream
+        {
+            private readonly byte[] _prefix;
+            private readonly Stream _remainder;
+            private int _prefixOffset;
+            private bool _disposed;
+
+            public PrefixedStream(byte[] prefix, Stream remainder)
+            {
+                _prefix = prefix;
+                _remainder = remainder;
+            }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override void Flush() => _remainder.Flush();
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                int fromPrefix = ReadPrefix(buffer.AsSpan(offset, count));
+                if (fromPrefix > 0)
+                    return fromPrefix;
+
+                return _remainder.Read(buffer, offset, count);
+            }
+
+            public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                int fromPrefix = ReadPrefix(buffer.AsSpan(offset, count));
+                if (fromPrefix > 0)
+                    return fromPrefix;
+
+                return await _remainder.ReadAsync(buffer.AsMemory(offset, count), cancellationToken);
+            }
+
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                int fromPrefix = ReadPrefix(buffer.Span);
+                if (fromPrefix > 0)
+                    return ValueTask.FromResult(fromPrefix);
+
+                return _remainder.ReadAsync(buffer, cancellationToken);
+            }
+
+            private int ReadPrefix(Span<byte> destination)
+            {
+                int remaining = _prefix.Length - _prefixOffset;
+                if (remaining <= 0 || destination.Length == 0)
+                    return 0;
+
+                int toCopy = Math.Min(remaining, destination.Length);
+                _prefix.AsSpan(_prefixOffset, toCopy).CopyTo(destination);
+                _prefixOffset += toCopy;
+                return toCopy;
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing)
+            {
+                if (!_disposed && disposing)
+                {
+                    _remainder.Dispose();
+                    _disposed = true;
+                }
+
+                base.Dispose(disposing);
+            }
+
+            public override async ValueTask DisposeAsync()
+            {
+                if (!_disposed)
+                {
+                    await _remainder.DisposeAsync();
+                    _disposed = true;
+                }
+
+                await base.DisposeAsync();
+            }
+        }
+
         public static async IAsyncEnumerable<string> ToChatCompletionSseAsync(
             Stream responsesSse,
             string? modelHint,
+            bool includeUsage,
             ILogger logger,
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
@@ -347,6 +674,13 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                             state.ErrorCode = GetEventErrorValue(evt, "code");
                             state.IncompleteReason = evt["response"]?["incomplete_details"]?["reason"]?.GetValue<string>()
                                 ?? evt["incomplete_details"]?["reason"]?.GetValue<string>();
+                            if (eventType is "response.completed" or "response.incomplete")
+                            {
+                                JsonObject? responseUsage = evt["response"]?["usage"] as JsonObject
+                                    ?? evt["usage"] as JsonObject;
+                                if (responseUsage is not null)
+                                    state.Usage = ConvertUsage(responseUsage);
+                            }
                             if (eventType is "response.failed" or "error")
                                 logger.LogWarning("Bridge SSE terminal Type={Type} Detail={Detail}", eventType, state.ErrorMessage ?? state.ErrorCode);
                             else if (eventType == "response.incomplete")
@@ -427,6 +761,21 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                     };
                     state.ChunkCount++;
                     yield return $"data: {finalChunk.ToJsonString(CompactJson)}\n\n";
+
+                    if (includeUsage && state.Usage is not null)
+                    {
+                        JsonObject usageChunk = new JsonObject
+                        {
+                            ["id"] = state.CompletionId,
+                            ["object"] = "chat.completion.chunk",
+                            ["created"] = state.Created,
+                            ["model"] = state.Model,
+                            ["choices"] = new JsonArray(),
+                            ["usage"] = state.Usage.DeepClone()
+                        };
+                        state.ChunkCount++;
+                        yield return $"data: {usageChunk.ToJsonString(CompactJson)}\n\n";
+                    }
                 }
 
                 yield return "data: [DONE]\n\n";

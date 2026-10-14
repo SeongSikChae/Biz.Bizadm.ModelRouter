@@ -199,6 +199,10 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             bool stream = chatRoot["stream"] is JsonValue streamValue
                 && streamValue.TryGetValue(out bool streamEnabled)
                 && streamEnabled;
+            bool includeUsage = stream
+                && chatRoot["stream_options"]?["include_usage"] is JsonValue includeUsageValue
+                && includeUsageValue.TryGetValue(out bool includeUsageEnabled)
+                && includeUsageEnabled;
 
             byte[] responsesPayload = ChatResponsesBridge.ToResponsesRequest(chatRoot, reasoningEffort);
 
@@ -267,10 +271,38 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             }
 
             Stream upstreamStream = await upstream.Content.ReadAsStreamAsync(cancellationToken);
+            ChatResponsesBridge.EarlyStreamPeekResult peek = await ChatResponsesBridge.PeekEarlyRateLimitFailureAsync(
+                upstreamStream,
+                _logger,
+                cancellationToken);
+
+            if (peek.RateLimitErrorBody is not null)
+            {
+                RetryConditionHeaderValue? retryAfter = upstream.Headers.RetryAfter;
+                upstream.Dispose();
+                _logger.LogWarning(
+                    "Returning HTTP 429 for early Responses SSE rate-limit Model={Model}",
+                    modelHint);
+
+                HttpResponseMessage rateLimitResponse = new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+                {
+                    Content = new ByteArrayContent(peek.RateLimitErrorBody)
+                    {
+                        Headers = { ContentType = new MediaTypeHeaderValue("application/json") }
+                    }
+                };
+
+                if (retryAfter is not null)
+                    rateLimitResponse.Headers.RetryAfter = retryAfter;
+
+                return rateLimitResponse;
+            }
+
             SseTransformContent transformed = new SseTransformContent(
                 upstream,
-                upstreamStream,
+                peek.ContinueStream!,
                 modelHint,
+                includeUsage,
                 mapper,
                 _logger,
                 cancellationToken);
@@ -654,6 +686,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             private readonly HttpResponseMessage _upstreamResponse;
             private readonly Stream _upstreamStream;
             private readonly string? _modelHint;
+            private readonly bool _includeUsage;
             private readonly ToolCallIdMapper _mapper;
             private readonly ILogger<AzureFoundryChatClient> _logger;
             private readonly CancellationToken _cancellationToken;
@@ -662,6 +695,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 HttpResponseMessage upstreamResponse,
                 Stream upstreamStream,
                 string? modelHint,
+                bool includeUsage,
                 ToolCallIdMapper mapper,
                 ILogger<AzureFoundryChatClient> logger,
                 CancellationToken cancellationToken)
@@ -669,6 +703,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 _upstreamResponse = upstreamResponse;
                 _upstreamStream = upstreamStream;
                 _modelHint = modelHint;
+                _includeUsage = includeUsage;
                 _mapper = mapper;
                 _logger = logger;
                 _cancellationToken = cancellationToken;
@@ -683,6 +718,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                     await foreach (string chunk in ChatResponsesBridge.ToChatCompletionSseAsync(
                                        _upstreamStream,
                                        _modelHint,
+                                       _includeUsage,
                                        _logger,
                                        _cancellationToken))
                     {
