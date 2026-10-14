@@ -1,6 +1,9 @@
+using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Biz.Bizadm.ModelRouter.Server.Models.Provider.OpenAi;
 
 namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
 {
@@ -10,13 +13,18 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
         private const string ResponsesPath = "openai/v1/responses";
         private const string ModelsPath = "openai/v1/models";
         private const int MaxLoggedErrorBodyChars = 4096;
+        /// <summary>SupportsNone=false인 모델에서 Effort=none일 때 쓰는 최저 허용 effort.</summary>
+        private const string LowestEffortWhenNoneUnsupported = "low";
+
+        /// <summary>Bridge 등에서 Effort가 비어 있을 때 쓰는 기본값 (모델 기본과 동일).</summary>
+        private const string DefaultEffortWhenMissing = "medium";
 
         private readonly HttpClient _httpClient;
         private readonly Uri _chatCompletionsUri;
         private readonly Uri _responsesUri;
         private readonly Uri _modelsUri;
         private readonly string _endpoint;
-        private readonly Dictionary<string, string> _reasoningEffortByModel;
+        private readonly Dictionary<string, ModelReasoningPolicy> _reasoningByModel;
         private readonly ILogger<AzureFoundryChatClient> _logger;
 
         public AzureFoundryChatClient(
@@ -30,7 +38,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             _chatCompletionsUri = new Uri($"{_endpoint}/{ChatCompletionsPath}");
             _responsesUri = new Uri($"{_endpoint}/{ResponsesPath}");
             _modelsUri = new Uri($"{_endpoint}/{ModelsPath}");
-            _reasoningEffortByModel = BuildReasoningEffortLookup(configuration.ReasoningEffortByModel);
+            _reasoningByModel = BuildReasoningLookup(configuration);
         }
 
         public async Task<HttpResponseMessage> ForwardChatCompletionsAsync(
@@ -41,37 +49,131 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             using MemoryStream bufferedBody = new MemoryStream();
             await requestBody.CopyToAsync(bufferedBody, cancellationToken);
             byte[] original = bufferedBody.ToArray();
-            byte[] payload = original;
 
-            if (TryParseObject(original, out JsonObject? root) && root is not null)
+            if (!TryParseObject(original, out JsonObject? root) || root is null)
+                return await PostRawAsync(_chatCompletionsUri, original, contentType, cancellationToken);
+
+            ToolCallIdMapper mapper = new ToolCallIdMapper();
+            bool idsRewritten = mapper.RewriteChatCompletionsRequest(root);
+            byte[] baseline = idsRewritten ? SerializeJsonObject(root) : original;
+
+            bool hasTools = HasFunctionTools(root);
+            TryGetModelName(root, out string? model);
+            _reasoningByModel.TryGetValue(model ?? string.Empty, out ModelReasoningPolicy? policy);
+
+            if (!hasTools)
             {
-                // function tools + non-none reasoning_effort is rejected by Foundry on chat/completions
-                if (HasFunctionTools(root))
+                if (policy is not null
+                    && !string.IsNullOrWhiteSpace(policy.Effort))
                 {
-                    payload = ApplyChatReasoningEffort(root, "none", original);
+                    string effort = NormalizeEffort(policy.Effort, policy.SupportsNone);
+                    byte[] payload = ApplyChatReasoningEffort(root, effort, baseline);
+                    return await PostChatAndRewriteAsync(payload, contentType, mapper, cancellationToken);
                 }
-                else if (TryGetModelName(root, out string? model)
-                    && model is not null
-                    && _reasoningEffortByModel.TryGetValue(model, out string? effort)
-                    && !string.IsNullOrWhiteSpace(effort))
-                {
-                    payload = ApplyChatReasoningEffort(root, effort, original);
-                }
+
+                return await PostChatAndRewriteAsync(baseline, contentType, mapper, cancellationToken);
             }
 
-            return await PostRawAsync(_chatCompletionsUri, payload, contentType, cancellationToken);
+            // tools 있음
+            ChatToolsMode mode = policy?.ChatToolsMode ?? ChatToolsMode.PassThrough;
+            string? configuredEffort = policy?.Effort;
+            bool supportsNone = policy?.SupportsNone ?? true;
+
+            if (mode == ChatToolsMode.ForceNone)
+            {
+                if (!supportsNone)
+                {
+                    string bridgeEffort = NormalizeEffort(
+                        string.IsNullOrWhiteSpace(configuredEffort)
+                            ? DefaultEffortWhenMissing
+                            : configuredEffort,
+                        supportsNone: false);
+
+                    _logger.LogInformation(
+                        "ForceNone unsupported for model; bridging to Responses Model={Model} Effort={Effort}",
+                        model,
+                        bridgeEffort);
+
+                    return await ForwardViaResponsesAsync(
+                        root,
+                        bridgeEffort,
+                        contentType,
+                        mapper,
+                        cancellationToken);
+                }
+
+                byte[] nonePayload = ApplyChatReasoningEffort(root, "none", baseline);
+                return await PostChatAndRewriteAsync(nonePayload, contentType, mapper, cancellationToken);
+            }
+
+            if (mode == ChatToolsMode.BridgeToResponses)
+            {
+                string bridgeEffort = NormalizeEffort(
+                    string.IsNullOrWhiteSpace(configuredEffort)
+                        ? DefaultEffortWhenMissing
+                        : configuredEffort,
+                    supportsNone);
+
+                return await ForwardViaResponsesAsync(
+                    root,
+                    bridgeEffort,
+                    contentType,
+                    mapper,
+                    cancellationToken);
+            }
+
+            // PassThrough
+            if (!string.IsNullOrWhiteSpace(configuredEffort))
+            {
+                string effort = NormalizeEffort(configuredEffort, supportsNone);
+                byte[] payload = ApplyChatReasoningEffort(root, effort, baseline);
+                return await PostChatAndRewriteAsync(payload, contentType, mapper, cancellationToken);
+            }
+
+            return await PostChatAndRewriteAsync(baseline, contentType, mapper, cancellationToken);
         }
 
-        public Task<HttpResponseMessage> ForwardResponsesAsync(
+        public async Task<HttpResponseMessage> ForwardResponsesAsync(
             Stream requestBody,
             string? contentType,
             CancellationToken cancellationToken)
-            => PostWithReasoningAsync(
+        {
+            using MemoryStream bufferedBody = new MemoryStream();
+            await requestBody.CopyToAsync(bufferedBody, cancellationToken);
+            byte[] original = bufferedBody.ToArray();
+
+            if (!TryParseObject(original, out JsonObject? root) || root is null)
+                return await PostRawAsync(_responsesUri, original, contentType, cancellationToken);
+
+            ToolCallIdMapper mapper = new ToolCallIdMapper();
+            bool idsRewritten = mapper.RewriteResponsesRequest(root);
+            byte[] baseline = idsRewritten ? SerializeJsonObject(root) : original;
+            byte[] payload = baseline;
+
+            if (TryGetModelName(root, out string? model)
+                && model is not null
+                && _reasoningByModel.TryGetValue(model, out ModelReasoningPolicy? policy)
+                && policy is not null
+                && !string.IsNullOrWhiteSpace(policy.Effort))
+            {
+                string effort = NormalizeEffort(policy.Effort, policy.SupportsNone);
+                payload = ApplyResponsesReasoningEffort(root, effort, baseline);
+            }
+
+            HttpResponseMessage response = await PostRawAsync(
                 _responsesUri,
-                requestBody,
+                payload,
                 contentType,
-                ApplyResponsesReasoningEffort,
                 cancellationToken);
+
+            await ToolCallIdResponseRewriter.RewriteHttpContentAsync(
+                response,
+                mapper,
+                isChatCompletions: false,
+                cancellationToken);
+
+            return response;
+        }
 
         public Task<HttpResponseMessage> ForwardModelsAsync(CancellationToken cancellationToken)
         {
@@ -86,30 +188,108 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             return SendAsync(request, cancellationToken);
         }
 
-        private async Task<HttpResponseMessage> PostWithReasoningAsync(
-            Uri uri,
-            Stream requestBody,
+        private async Task<HttpResponseMessage> ForwardViaResponsesAsync(
+            JsonObject chatRoot,
+            string reasoningEffort,
             string? contentType,
-            Func<JsonObject, string, byte[], byte[]> applyReasoning,
+            ToolCallIdMapper mapper,
             CancellationToken cancellationToken)
         {
-            using MemoryStream bufferedBody = new MemoryStream();
-            await requestBody.CopyToAsync(bufferedBody, cancellationToken);
-            byte[] original = bufferedBody.ToArray();
-            byte[] payload = original;
+            string? modelHint = chatRoot["model"]?.GetValue<string>();
+            bool stream = chatRoot["stream"] is JsonValue streamValue
+                && streamValue.TryGetValue(out bool streamEnabled)
+                && streamEnabled;
 
-            if (TryParseObject(original, out JsonObject? root)
-                && root is not null
-                && TryGetModelName(root, out string? model)
-                && model is not null
-                && _reasoningEffortByModel.TryGetValue(model, out string? effort)
-                && !string.IsNullOrWhiteSpace(effort))
+            byte[] responsesPayload = ChatResponsesBridge.ToResponsesRequest(chatRoot, reasoningEffort);
+
+            _logger.LogInformation(
+                "Bridging chat/completions to Responses Model={Model} Effort={Effort} Stream={Stream} PayloadBytes={PayloadBytes}",
+                modelHint,
+                reasoningEffort,
+                stream,
+                responsesPayload.Length);
+
+            HttpResponseMessage upstream = await PostRawAsync(
+                _responsesUri,
+                responsesPayload,
+                contentType,
+                cancellationToken);
+
+            if (!upstream.IsSuccessStatusCode)
+                return upstream;
+
+            if (!stream)
             {
-                payload = applyReasoning(root, effort, original);
+                byte[] responsesBody = await upstream.Content.ReadAsByteArrayAsync(cancellationToken);
+                upstream.Dispose();
+
+                if (!TryParseObject(responsesBody, out JsonObject? responsesRoot) || responsesRoot is null)
+                {
+                    return new HttpResponseMessage(HttpStatusCode.BadGateway)
+                    {
+                        Content = new ByteArrayContent(responsesBody)
+                        {
+                            Headers = { ContentType = new MediaTypeHeaderValue("application/json") }
+                        }
+                    };
+                }
+
+                byte[] chatBody = ChatResponsesBridge.ToChatCompletionResponse(responsesRoot);
+                if (TryParseObject(chatBody, out JsonObject? chatRootObject)
+                    && chatRootObject is not null
+                    && mapper.RewriteChatCompletionsResponse(chatRootObject))
+                {
+                    chatBody = SerializeJsonObject(chatRootObject);
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(chatBody)
+                    {
+                        Headers = { ContentType = new MediaTypeHeaderValue("application/json") }
+                    }
+                };
             }
 
-            return await PostRawAsync(uri, payload, contentType, cancellationToken);
+            Stream upstreamStream = await upstream.Content.ReadAsStreamAsync(cancellationToken);
+            SseTransformContent transformed = new SseTransformContent(
+                upstream,
+                upstreamStream,
+                modelHint,
+                mapper,
+                cancellationToken);
+
+            HttpResponseMessage response = new HttpResponseMessage(upstream.StatusCode)
+            {
+                Content = transformed
+            };
+            response.Content.Headers.ContentType = new MediaTypeHeaderValue("text/event-stream");
+            return response;
         }
+
+        private async Task<HttpResponseMessage> PostChatAndRewriteAsync(
+            byte[] payload,
+            string? contentType,
+            ToolCallIdMapper mapper,
+            CancellationToken cancellationToken)
+        {
+            HttpResponseMessage response = await PostRawAsync(
+                _chatCompletionsUri,
+                payload,
+                contentType,
+                cancellationToken);
+
+            await ToolCallIdResponseRewriter.RewriteHttpContentAsync(
+                response,
+                mapper,
+                isChatCompletions: true,
+                cancellationToken);
+
+            return response;
+        }
+
+        private static byte[] SerializeJsonObject(JsonObject root)
+            => Encoding.UTF8.GetBytes(root.ToJsonString());
 
         private static byte[] ApplyChatReasoningEffort(JsonObject root, string effort, byte[] original)
         {
@@ -233,7 +413,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 errorMessage ?? "-",
                 string.IsNullOrEmpty(errorBody) ? "-" : errorBody);
 
-            System.Net.Http.Headers.MediaTypeHeaderValue? contentType = response.Content.Headers.ContentType;
+            MediaTypeHeaderValue? contentType = response.Content.Headers.ContentType;
             response.Content.Dispose();
             response.Content = new ByteArrayContent(bodyBytes);
             if (contentType is not null)
@@ -335,22 +515,64 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             return text[..MaxLoggedErrorBodyChars] + "...(truncated)";
         }
 
-        private static Dictionary<string, string> BuildReasoningEffortLookup(
-            Dictionary<string, string>? configured)
+        private static Dictionary<string, ModelReasoningPolicy> BuildReasoningLookup(Configuration configuration)
         {
-            Dictionary<string, string> lookup = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            if (configured is null || configured.Count == 0)
-                return lookup;
+            Dictionary<string, ModelReasoningPolicy> lookup =
+                new Dictionary<string, ModelReasoningPolicy>(StringComparer.OrdinalIgnoreCase);
 
-            foreach ((string model, string effort) in configured)
+            if (configuration.ReasoningEffortByModel is { Count: > 0 })
             {
-                if (string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(effort))
-                    continue;
+                foreach ((string model, string effort) in configuration.ReasoningEffortByModel)
+                {
+                    if (string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(effort))
+                        continue;
 
-                lookup[model.Trim()] = effort.Trim();
+                    // 레거시 맵: tools가 있으면 BridgeToResponses (무조건 none 제거)
+                    lookup[model.Trim()] = new ModelReasoningPolicy(
+                        effort.Trim(),
+                        ChatToolsMode.BridgeToResponses,
+                        SupportsNone: true);
+                }
+            }
+
+            if (configuration.ReasoningByModel is { Count: > 0 })
+            {
+                foreach ((string model, ModelReasoningOptions? options) in configuration.ReasoningByModel)
+                {
+                    if (string.IsNullOrWhiteSpace(model) || options is null)
+                        continue;
+
+                    string? effort = string.IsNullOrWhiteSpace(options.Effort) ? null : options.Effort.Trim();
+                    ChatToolsMode mode = ParseChatToolsMode(options.ChatToolsMode);
+                    bool supportsNone = options.SupportsNone ?? true;
+
+                    lookup[model.Trim()] = new ModelReasoningPolicy(effort, mode, supportsNone);
+                }
             }
 
             return lookup;
+        }
+
+        private static ChatToolsMode ParseChatToolsMode(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return ChatToolsMode.PassThrough;
+
+            if (Enum.TryParse(value.Trim(), ignoreCase: true, out ChatToolsMode mode))
+                return mode;
+
+            return ChatToolsMode.PassThrough;
+        }
+
+        private static string NormalizeEffort(string effort, bool supportsNone)
+        {
+            if (!supportsNone
+                && string.Equals(effort, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return LowestEffortWhenNoneUnsupported;
+            }
+
+            return effort;
         }
 
         private static bool TryParseObject(byte[] payload, out JsonObject? rootObject)
@@ -404,6 +626,96 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             }
 
             return false;
+        }
+
+        private sealed record ModelReasoningPolicy(
+            string? Effort,
+            ChatToolsMode ChatToolsMode,
+            bool SupportsNone);
+
+        private sealed class SseTransformContent : HttpContent
+        {
+            private readonly HttpResponseMessage _upstreamResponse;
+            private readonly Stream _upstreamStream;
+            private readonly string? _modelHint;
+            private readonly ToolCallIdMapper _mapper;
+            private readonly CancellationToken _cancellationToken;
+
+            public SseTransformContent(
+                HttpResponseMessage upstreamResponse,
+                Stream upstreamStream,
+                string? modelHint,
+                ToolCallIdMapper mapper,
+                CancellationToken cancellationToken)
+            {
+                _upstreamResponse = upstreamResponse;
+                _upstreamStream = upstreamStream;
+                _modelHint = modelHint;
+                _mapper = mapper;
+                _cancellationToken = cancellationToken;
+            }
+
+            protected override async Task SerializeToStreamAsync(
+                Stream stream,
+                TransportContext? context)
+            {
+                try
+                {
+                    await foreach (string chunk in ChatResponsesBridge.ToChatCompletionSseAsync(
+                                       _upstreamStream,
+                                       _modelHint,
+                                       _cancellationToken))
+                    {
+                        string output = ApplyMapperToBridgeSseEvent(chunk, _mapper);
+                        byte[] bytes = Encoding.UTF8.GetBytes(output);
+                        await stream.WriteAsync(bytes, _cancellationToken);
+                        await stream.FlushAsync(_cancellationToken);
+                    }
+                }
+                finally
+                {
+                    await _upstreamStream.DisposeAsync();
+                    _upstreamResponse.Dispose();
+                }
+            }
+
+            private static string ApplyMapperToBridgeSseEvent(string sseEvent, ToolCallIdMapper mapper)
+            {
+                if (mapper.Count == 0)
+                    return sseEvent;
+
+                const string prefix = "data: ";
+                if (!sseEvent.StartsWith(prefix, StringComparison.Ordinal))
+                    return sseEvent;
+
+                string payload = sseEvent[prefix.Length..].TrimEnd('\n');
+                string? rewritten = ToolCallIdResponseRewriter.RewriteSseDataPayload(
+                    payload,
+                    mapper,
+                    isChatCompletions: true);
+
+                if (rewritten is null)
+                    return sseEvent;
+
+                return prefix + rewritten + "\n\n";
+            }
+
+            protected override bool TryComputeLength(out long length)
+            {
+                length = -1;
+                return false;
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _upstreamStream.Dispose();
+                    _upstreamResponse.Dispose();
+                }
+
+                base.Dispose(disposing);
+            }
         }
     }
 }

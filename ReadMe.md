@@ -10,10 +10,14 @@ Azure AI Foundry의 OpenAI 호환 API를 프록시하는 ASP.NET Core 서버입�
 - tool call id 양방향 매핑 (요청 단위)
   - Foundry 64자 제한을 피하기 위해 요청의 `tool_calls[].id` / `tool_call_id` / `call_id`를 임의 short id로 치환
   - 동일 요청–응답에서 맵에 있는 id는 비스트리밍·SSE 응답 모두 클라이언트 원본 id로 복원
-- 모델별 reasoning effort 주입
-  - `chat/completions`에 function tools가 있으면 `reasoning_effort: none` 강제
-  - tools가 없으면 `ReasoningEffortByModel` 값을 `reasoning_effort`로 주입
-  - `responses`에는 `reasoning.effort`로 주입
+  - `BridgeToResponses` 포함: chat 요청 id를 먼저 치환한 뒤 Responses `call_id`로 전달하고, bridge가 만든 chat 응답/SSE에서 원본 id로 복원
+  - `/v1/chat/completions` 직통과 `/v1/responses` 직통에도 동일하게 적용
+- 모델별 reasoning / chat+tools 정책 (`ReasoningByModel`)
+  - tools 없음: `Effort`를 `reasoning_effort`로 주입
+  - tools + `BridgeToResponses`: Responses API로 우회 후 chat.completions 형식으로 응답 변환 (Cursor/에이전트 권장)
+  - tools + `ForceNone`: chat에 `reasoning_effort: none` (LUNA 저하 경로; `SupportsNone: false`면 bridge 폴백)
+  - `/v1/responses`에는 `Effort`를 `reasoning.effort`로 주입
+  - 하위 호환: `ReasoningEffortByModel` 문자열 맵은 tools 시 `BridgeToResponses`로 취급
 - 콘솔 및 날짜별 파일 로그 기록 (`X-Request-Id` 응답 헤더 포함)
 - 선택적 HTTPS (`UseSsl`), TLS 1.2/1.3, HTTP/1·2·3
 - Windows Service 및 systemd 호스팅 지원
@@ -51,10 +55,15 @@ Port: 80
 OpenAIEndpoint: https://YOUR-RESOURCE.services.ai.azure.com
 OpenAIKey: replace-with-foundry-api-key
 
-# 선택 사항: 지정한 모델 요청에 적용할 reasoning effort
-ReasoningEffortByModel:
-  Bizadm-GPT-6-LUNA: medium
-  Bizadm-GPT-6.1-SOL: medium
+ReasoningByModel:
+  Bizadm-GPT-6-LUNA:
+    Effort: medium
+    ChatToolsMode: BridgeToResponses
+    SupportsNone: true
+  Bizadm-GPT-6.1-SOL:
+    Effort: medium
+    ChatToolsMode: BridgeToResponses
+    SupportsNone: false
 ```
 
 | 항목 | 필수 | 설명 |
@@ -68,11 +77,27 @@ ReasoningEffortByModel:
 | `IncludeCipherSuites` | 아니오 | 허용 TLS 암호 스위트 (`TlsCipherSuite` enum 이름, 쉼표 구분) |
 | `OpenAIEndpoint` | 예 | Foundry 기본 endpoint. `openai/v1` 경로 제외 |
 | `OpenAIKey` | 예 | Foundry API 키 (`api-key` 헤더로 전달) |
-| `ReasoningEffortByModel` | 아니오 | 모델별 reasoning effort 맵 |
+| `ReasoningByModel` | 아니오 | 모델별 Effort / ChatToolsMode / SupportsNone |
+| `ReasoningEffortByModel` | 아니오 | 하위 호환 effort 문자열 맵 (tools 시 BridgeToResponses) |
 
 `OpenAIEndpoint`에는 `openai/v1`을 포함하지 않습니다. 서버가 `/openai/v1/chat/completions`, `/openai/v1/responses`, `/openai/v1/models` 경로를 추가합니다.
 
-`ReasoningEffortByModel`은 선택 항목입니다. 모델명은 대소문자를 구분하지 않습니다. `/v1/chat/completions`에 function tools가 포함되면 맵 값과 무관하게 `reasoning_effort: none`을 강제합니다. tools가 없고 맵에 모델이 있으면 `reasoning_effort`를 주입(또는 덮어쓰기)합니다. `/v1/responses` 요청에는 맵 값을 `reasoning.effort`로 주입합니다. 맵에 없거나 JSON을 파싱할 수 없으면 요청 바디를 그대로 전달합니다. `reasoning.summary` / `reasoning.mode` 등 다른 필드는 변경하지 않습니다.
+### 모델별 reasoning / tools (Foundry·OpenAI 문서 기준)
+
+| 배포명 | 기반 모델 | 허용 effort | chat + function tools |
+| --- | --- | --- | --- |
+| `Bizadm-GPT-6-LUNA` | gpt-6-luna | `none`, `low`, `medium`, `high`, `xhigh`, `max` | chat에서는 `none`만 가능. **reasoning+tools는 Responses** |
+| `Bizadm-GPT-6.1-SOL` | gpt-6.1-sol | `low`, `medium`, `high`, `xhigh`, `max` (`none` 불가) | chat는 tools 없이만. **tools는 Responses 필수** |
+
+`ChatToolsMode` 값:
+
+| 값 | 동작 |
+| --- | --- |
+| `BridgeToResponses` | tools가 있으면 Responses로 우회하고 chat.completions 응답으로 변환. Cursor/에이전트 권장 |
+| `ForceNone` | chat에 `reasoning_effort: none`. LUNA의 지연/비용 우선 저하 경로. `SupportsNone: false`면 bridge로 폴백 |
+| `PassThrough` | none 강제 없음. `Effort`만 선택 주입 |
+
+모델명은 대소문자를 구분하지 않습니다. `SupportsNone: false`인데 Effort가 `none`이면 허용된 최저 단계인 `low`로 보정합니다. 맵에 없거나 JSON을 파싱할 수 없으면 요청 바디를 그대로 전달합니다. `reasoning.summary` / `reasoning.mode` 등 다른 필드는 변경하지 않습니다.
 
 > **주의:** API 라우트 자체에는 인증이 없습니다. `UseSsl`이 꺼져 있으면 HTTP로 수신하므로, 외부에 노출할 때는 TLS·인증을 제공하는 프록시/게이트웨이 뒤에 두거나 `UseSsl: true`로 HTTPS를 켜세요.
 

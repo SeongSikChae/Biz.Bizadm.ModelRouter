@@ -9,9 +9,21 @@ Port: 80 # 수신 포트
 OpenAIEndpoint: "https://YOUR-RESOURCE.services.ai.azure.com" # Azure AI Foundry OpenAI 호환 엔드포인트 (openai/v1 경로 제외)
 OpenAIKey: "replace-with-foundry-api-key"
 
-# 선택: 모델별 reasoning effort
-# chat/completions: reasoning_effort (function tools가 있으면 none 강제)
-# responses: reasoning.effort
-ReasoningEffortByModel:
-  Bizadm-GPT-6-LUNA: "medium"
-  Bizadm-GPT-6.1-SOL: "medium"
+# 권장: 모델별 reasoning / chat+tools 정책
+# ChatToolsMode:
+#   BridgeToResponses - tools+reasoning → Responses 우회 후 chat 응답으로 변환 (Cursor/에이전트 권장)
+#   ForceNone         - chat에 reasoning_effort=none (LUNA 저하 경로; SupportsNone=false면 bridge 폴백)
+#   PassThrough       - none 강제 없음, Effort만 선택 주입
+ReasoningByModel:
+  Bizadm-GPT-6-LUNA:
+    Effort: "medium"
+    ChatToolsMode: BridgeToResponses
+    SupportsNone: true
+  Bizadm-GPT-6.1-SOL:
+    Effort: "medium"
+    ChatToolsMode: BridgeToResponses
+    SupportsNone: false
+
+# 하위 호환(비권장): 모델명 → effort 문자열만 지정. tools가 있으면 BridgeToResponses로 취급.
+# ReasoningEffortByModel:
+#   Bizadm-GPT-6-LUNA: "medium"
