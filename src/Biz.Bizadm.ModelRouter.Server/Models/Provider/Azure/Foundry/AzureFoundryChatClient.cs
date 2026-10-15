@@ -253,6 +253,29 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                     };
                 }
 
+                string? incompleteReason = responsesRoot["incomplete_details"]?["reason"]?.GetValue<string>();
+                if (string.Equals(incompleteReason, "content_filter", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(incompleteReason, "max_output_tokens", StringComparison.OrdinalIgnoreCase))
+                {
+                    string? filterSummary = ChatResponsesBridge.SummarizeContentFilters(
+                        responsesRoot["content_filters"] as JsonArray);
+                    if (!string.IsNullOrEmpty(filterSummary))
+                    {
+                        _logger.LogWarning(
+                            "Responses incomplete mapped to finish_reason Model={Model} Reason={Reason} ContentFilters={ContentFilters}",
+                            modelHint,
+                            incompleteReason,
+                            filterSummary);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "Responses incomplete mapped to finish_reason Model={Model} Reason={Reason}",
+                            modelHint,
+                            incompleteReason);
+                    }
+                }
+
                 byte[] chatBody = ChatResponsesBridge.ToChatCompletionResponse(responsesRoot);
                 if (TryParseObject(chatBody, out JsonObject? chatRootObject)
                     && chatRootObject is not null

@@ -21,6 +21,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Biz.Bizadm.ModelRouter.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="Configuration.sample.yml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

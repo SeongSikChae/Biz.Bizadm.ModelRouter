@@ -2,4 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Biz.Bizadm.ModelRouter.Server/Biz.Bizadm.ModelRouter.Server.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Biz.Bizadm.ModelRouter.Tests/Biz.Bizadm.ModelRouter.Tests.csproj" />
+  </Folder>
 </Solution>

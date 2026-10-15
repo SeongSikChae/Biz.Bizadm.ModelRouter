@@ -97,7 +97,7 @@ ReasoningByModel:
 | `ForceNone` | chat에 `reasoning_effort: none`. LUNA의 지연/비용 우선 저하 경로. `SupportsNone: false`면 bridge로 폴백 |
 | `PassThrough` | none 강제 없음. `Effort`만 선택 주입 |
 
-BridgeToResponses 스트림은 출력 청크 전에 rate-limit/`TPM` 실패가 오면 HTTP 429와 JSON 오류 본문으로 반환합니다. 그 외 `response.failed`/`error` 및 토큰 한도 이외의 `response.incomplete`는 OpenAI 호환 SSE 오류 이벤트로 전달하며, 로그에 `Bridge SSE start`, `terminal`, `end`와 이벤트·청크 수를 기록합니다. `max_output_tokens` 종료는 `finish_reason: length`로 전달됩니다. 요청에 `stream_options.include_usage: true`가 있으면 성공 종료 시 `finish_reason` 청크 뒤에 `usage` 청크를 전달합니다. 비스트리밍 `failed`/`incomplete` 응답은 HTTP 502와 JSON 오류 본문으로 반환됩니다.
+BridgeToResponses 스트림은 출력 청크 전에 rate-limit/`TPM` 실패가 오면 HTTP 429와 JSON 오류 본문으로 반환합니다. `max_output_tokens` 종료는 `finish_reason: length`, `content_filter` 종료는 `finish_reason: content_filter`로 전달됩니다. Azure가 `content_filters`를 실어 주면 choice에 `content_filters`(및 해당 시 `content_filter_results`)를 보존하고, 차단·필터 카테고리 요약을 로그에 남깁니다. 그 외 `response.failed`/`error` 및 매핑되지 않은 `response.incomplete`는 OpenAI 호환 SSE 오류 이벤트로 전달하며(사유가 있으면 message에 포함), 로그에 `Bridge SSE start`, `terminal`, `end`와 이벤트·청크 수를 기록합니다. 요청에 `stream_options.include_usage: true`가 있으면 성공 종료 시 `finish_reason` 청크 뒤에 `usage` 청크를 전달합니다. 비스트리밍에서도 `content_filter`/`max_output_tokens` incomplete는 위 finish_reason으로 변환하고, 나머지 `failed`/`incomplete`는 HTTP 502와 JSON 오류 본문으로 반환합니다.
 
 Cursor `Show Context Usage` 표시는 전달된 토큰 `usage` 외에도 Cursor가 모델명으로 판별하는 context window에 의존합니다. Override에 등록한 모델명이 Cursor 내장 모델 카탈로그와 일치하는지 확인하세요; ModelRouter는 Cursor 카탈로그를 설정할 수 없습니다.
 

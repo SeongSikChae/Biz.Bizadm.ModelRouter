@@ -102,7 +102,8 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 }
             }
 
-            string finishReason = toolCalls is { Count: > 0 } ? "tool_calls" : "stop";
+            string? incompleteReason = GetIncompleteReason(responsesRoot);
+            string finishReason = ResolveFinishReason(incompleteReason, toolCalls is { Count: > 0 });
             JsonObject message = new JsonObject
             {
                 ["role"] = "assistant",
@@ -117,21 +118,21 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                     ? $"chatcmpl-{id["resp_".Length..]}"
                     : $"chatcmpl-{id}";
 
+            JsonObject choice = new JsonObject
+            {
+                ["index"] = 0,
+                ["message"] = message,
+                ["finish_reason"] = finishReason
+            };
+            AttachContentFilters(choice, GetContentFilters(responsesRoot));
+
             JsonObject chat = new JsonObject
             {
                 ["id"] = chatId,
                 ["object"] = "chat.completion",
                 ["created"] = created,
                 ["model"] = model,
-                ["choices"] = new JsonArray
-                {
-                    new JsonObject
-                    {
-                        ["index"] = 0,
-                        ["message"] = message,
-                        ["finish_reason"] = finishReason
-                    }
-                }
+                ["choices"] = new JsonArray { choice }
             };
 
             if (responsesRoot["usage"] is JsonObject usage)
@@ -150,8 +151,16 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 return false;
             }
 
+            // content_filter / max_output_tokens incomplete는 chat finish_reason으로 변환한다.
+            if (string.Equals(status, "incomplete", StringComparison.OrdinalIgnoreCase)
+                && IsMappedIncompleteReason(GetIncompleteReason(responsesRoot)))
+            {
+                errorBody = Array.Empty<byte>();
+                return false;
+            }
+
             JsonObject? error = GetErrorObject(responsesRoot, status);
-            string? incompleteReason = responsesRoot["incomplete_details"]?["reason"]?.GetValue<string>();
+            string? incompleteReason = GetIncompleteReason(responsesRoot);
             errorBody = SerializeError(error, status, incompleteReason);
             return true;
         }
@@ -213,6 +222,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             public int NextToolIndex { get; set; }
             public string? FinishReason { get; set; }
             public JsonObject? Usage { get; set; }
+            public JsonArray? ContentFilters { get; set; }
 
             public int RegisterFunctionCall(string? itemId, string? callId)
             {
@@ -336,14 +346,10 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                     if (!IsTerminalEvent(eventType))
                         continue;
 
-                    bool maxTokensReached = eventType == "response.incomplete"
-                        && string.Equals(
-                            evt["response"]?["incomplete_details"]?["reason"]?.GetValue<string>()
-                                ?? evt["incomplete_details"]?["reason"]?.GetValue<string>(),
-                            "max_output_tokens",
-                            StringComparison.OrdinalIgnoreCase);
+                    bool mappedIncomplete = eventType == "response.incomplete"
+                        && IsMappedIncompleteReason(GetIncompleteReason(evt["response"] as JsonObject ?? evt));
 
-                    if (eventType == "response.completed" || maxTokensReached)
+                    if (eventType == "response.completed" || mappedIncomplete)
                         return EarlyStreamPeekResult.Continue(CreatePrefixedStream(peeked, responsesSse));
 
                     string? errorMessage = GetEventErrorMessage(evt);
@@ -672,19 +678,32 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                             state.ErrorMessage = GetEventErrorMessage(evt);
                             state.ErrorType = GetEventErrorValue(evt, "type");
                             state.ErrorCode = GetEventErrorValue(evt, "code");
-                            state.IncompleteReason = evt["response"]?["incomplete_details"]?["reason"]?.GetValue<string>()
-                                ?? evt["incomplete_details"]?["reason"]?.GetValue<string>();
+                            state.IncompleteReason = GetIncompleteReason(evt["response"] as JsonObject ?? evt);
                             if (eventType is "response.completed" or "response.incomplete")
                             {
                                 JsonObject? responseUsage = evt["response"]?["usage"] as JsonObject
                                     ?? evt["usage"] as JsonObject;
                                 if (responseUsage is not null)
                                     state.Usage = ConvertUsage(responseUsage);
+
+                                JsonArray? contentFilters = GetContentFilters(evt["response"] as JsonObject ?? evt);
+                                if (contentFilters is not null)
+                                    state.ContentFilters = contentFilters;
                             }
                             if (eventType is "response.failed" or "error")
                                 logger.LogWarning("Bridge SSE terminal Type={Type} Detail={Detail}", eventType, state.ErrorMessage ?? state.ErrorCode);
                             else if (eventType == "response.incomplete")
-                                logger.LogWarning("Bridge SSE terminal Type={Type} Detail={Detail}", eventType, state.IncompleteReason ?? state.ErrorMessage);
+                            {
+                                string? filterSummary = SummarizeContentFilters(state.ContentFilters);
+                                if (!string.IsNullOrEmpty(filterSummary))
+                                    logger.LogWarning(
+                                        "Bridge SSE terminal Type={Type} Detail={Detail} ContentFilters={ContentFilters}",
+                                        eventType,
+                                        state.IncompleteReason ?? state.ErrorMessage,
+                                        filterSummary);
+                                else
+                                    logger.LogWarning("Bridge SSE terminal Type={Type} Detail={Detail}", eventType, state.IncompleteReason ?? state.ErrorMessage);
+                            }
                             else
                                 logger.LogInformation("Bridge SSE terminal Type={Type}", eventType);
                         }
@@ -718,17 +737,21 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                     }
                 }
 
-                bool maxTokensReached = state.TerminalType == "response.incomplete"
-                    && string.Equals(state.IncompleteReason, "max_output_tokens", StringComparison.OrdinalIgnoreCase);
+                bool mappedIncomplete = state.TerminalType == "response.incomplete"
+                    && IsMappedIncompleteReason(state.IncompleteReason);
                 bool failed = state.TerminalType is "response.failed" or "error"
-                    || state.TerminalType == "response.incomplete" && !maxTokensReached
+                    || state.TerminalType == "response.incomplete" && !mappedIncomplete
                     || state.TerminalType is null;
 
                 if (failed)
                 {
                     state.SentError = true;
                     string message = state.ErrorMessage
-                        ?? (state.TerminalType is null ? "Responses stream ended before a terminal event." : "Responses request was incomplete.");
+                        ?? (state.TerminalType is null
+                            ? "Responses stream ended before a terminal event."
+                            : !string.IsNullOrEmpty(state.IncompleteReason)
+                                ? $"Responses request was incomplete ({state.IncompleteReason})."
+                                : "Responses request was incomplete.");
                     JsonObject error = new JsonObject
                     {
                         ["message"] = message,
@@ -740,8 +763,16 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 }
                 else
                 {
-                    if (maxTokensReached)
-                        state.FinishReason = "length";
+                    if (mappedIncomplete)
+                        state.FinishReason = ResolveFinishReason(state.IncompleteReason, hasToolCalls: state.FinishReason == "tool_calls");
+
+                    JsonObject finalChoice = new JsonObject
+                    {
+                        ["index"] = 0,
+                        ["delta"] = new JsonObject(),
+                        ["finish_reason"] = state.FinishReason ?? "stop"
+                    };
+                    AttachContentFilters(finalChoice, state.ContentFilters);
 
                     JsonObject finalChunk = new JsonObject
                     {
@@ -749,15 +780,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                         ["object"] = "chat.completion.chunk",
                         ["created"] = state.Created,
                         ["model"] = state.Model,
-                        ["choices"] = new JsonArray
-                        {
-                            new JsonObject
-                            {
-                                ["index"] = 0,
-                                ["delta"] = new JsonObject(),
-                                ["finish_reason"] = state.FinishReason ?? "stop"
-                            }
-                        }
+                        ["choices"] = new JsonArray { finalChoice }
                     };
                     state.ChunkCount++;
                     yield return $"data: {finalChunk.ToJsonString(CompactJson)}\n\n";
@@ -782,9 +805,19 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             }
             finally
             {
-                logger.LogInformation(
-                    "Bridge SSE end Model={Model} Events={Events} Chunks={Chunks} FinishReason={FinishReason} Terminal={Terminal} SentError={SentError} ParseErrors={ParseErrors} ElapsedMs={ElapsedMs}",
-                    state.Model, state.EventCount, state.ChunkCount, state.FinishReason, state.TerminalType, state.SentError, state.ParseErrorCount, stopwatch.ElapsedMilliseconds);
+                string? filterSummary = SummarizeContentFilters(state.ContentFilters);
+                if (!string.IsNullOrEmpty(filterSummary))
+                {
+                    logger.LogInformation(
+                        "Bridge SSE end Model={Model} Events={Events} Chunks={Chunks} FinishReason={FinishReason} Terminal={Terminal} SentError={SentError} ContentFilters={ContentFilters} ParseErrors={ParseErrors} ElapsedMs={ElapsedMs}",
+                        state.Model, state.EventCount, state.ChunkCount, state.FinishReason, state.TerminalType, state.SentError, filterSummary, state.ParseErrorCount, stopwatch.ElapsedMilliseconds);
+                }
+                else
+                {
+                    logger.LogInformation(
+                        "Bridge SSE end Model={Model} Events={Events} Chunks={Chunks} FinishReason={FinishReason} Terminal={Terminal} SentError={SentError} ParseErrors={ParseErrors} ElapsedMs={ElapsedMs}",
+                        state.Model, state.EventCount, state.ChunkCount, state.FinishReason, state.TerminalType, state.SentError, state.ParseErrorCount, stopwatch.ElapsedMilliseconds);
+                }
             }
         }
 
@@ -799,6 +832,110 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
         private static string? GetEventErrorValue(JsonObject evt, string property) =>
             evt["response"]?["error"]?[property]?.GetValue<string>()
             ?? evt["error"]?[property]?.GetValue<string>();
+
+        private static string? GetIncompleteReason(JsonObject? source) =>
+            source?["incomplete_details"]?["reason"]?.GetValue<string>()
+            ?? source?["response"]?["incomplete_details"]?["reason"]?.GetValue<string>();
+
+        private static bool IsMappedIncompleteReason(string? reason) =>
+            string.Equals(reason, "max_output_tokens", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(reason, "content_filter", StringComparison.OrdinalIgnoreCase);
+
+        private static string ResolveFinishReason(string? incompleteReason, bool hasToolCalls)
+        {
+            if (string.Equals(incompleteReason, "max_output_tokens", StringComparison.OrdinalIgnoreCase))
+                return "length";
+            if (string.Equals(incompleteReason, "content_filter", StringComparison.OrdinalIgnoreCase))
+                return "content_filter";
+            return hasToolCalls ? "tool_calls" : "stop";
+        }
+
+        private static JsonArray? GetContentFilters(JsonObject? source)
+        {
+            JsonNode? filters = source?["content_filters"] ?? source?["response"]?["content_filters"];
+            return filters is JsonArray array && array.Count > 0
+                ? (JsonArray)array.DeepClone()
+                : null;
+        }
+
+        private static void AttachContentFilters(JsonObject choice, JsonArray? contentFilters)
+        {
+            if (contentFilters is null || contentFilters.Count == 0)
+                return;
+
+            choice["content_filters"] = contentFilters.DeepClone();
+
+            // chat.completions 호환: blocked/filtered 항목의 content_filter_results를 평탄화해 붙인다.
+            foreach (JsonNode? item in contentFilters)
+            {
+                if (item is not JsonObject filterObject)
+                    continue;
+
+                bool blocked = filterObject["blocked"]?.GetValue<bool>() ?? false;
+                if (filterObject["content_filter_results"] is not JsonObject results)
+                    continue;
+
+                bool anyFiltered = false;
+                foreach (KeyValuePair<string, JsonNode?> property in results)
+                {
+                    if (property.Value is JsonObject category
+                        && (category["filtered"]?.GetValue<bool>() ?? false))
+                    {
+                        anyFiltered = true;
+                        break;
+                    }
+                }
+
+                if (blocked || anyFiltered)
+                {
+                    choice["content_filter_results"] = results.DeepClone();
+                    break;
+                }
+            }
+        }
+
+        internal static string? SummarizeContentFilters(JsonArray? contentFilters)
+        {
+            if (contentFilters is null || contentFilters.Count == 0)
+                return null;
+
+            List<string> parts = new();
+            foreach (JsonNode? item in contentFilters)
+            {
+                if (item is not JsonObject filterObject)
+                    continue;
+
+                string sourceType = filterObject["source_type"]?.GetValue<string>() ?? "unknown";
+                bool blocked = filterObject["blocked"]?.GetValue<bool>() ?? false;
+
+                if (filterObject["content_filter_results"] is JsonObject results)
+                {
+                    bool anyFiltered = false;
+                    foreach (KeyValuePair<string, JsonNode?> property in results)
+                    {
+                        if (property.Value is not JsonObject category)
+                            continue;
+
+                        bool filtered = category["filtered"]?.GetValue<bool>() ?? false;
+                        if (!filtered)
+                            continue;
+
+                        anyFiltered = true;
+                        string severity = category["severity"]?.GetValue<string>() ?? "filtered";
+                        parts.Add($"{sourceType}:{property.Key}:{severity}");
+                    }
+
+                    if (!anyFiltered && blocked)
+                        parts.Add($"{sourceType}:blocked");
+                }
+                else if (blocked)
+                {
+                    parts.Add($"{sourceType}:blocked");
+                }
+            }
+
+            return parts.Count > 0 ? string.Join(",", parts) : null;
+        }
 
         private static IEnumerable<JsonObject> ConvertStreamEvent(
             string eventType,
