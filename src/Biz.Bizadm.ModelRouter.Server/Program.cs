@@ -50,15 +50,18 @@ namespace Biz.Bizadm.ModelRouter.Server
             {
                 configureLogger
                     .MinimumLevel.Information()
+                    .MinimumLevel.Override(
+                        "Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry.AzureFoundryChatClient",
+                        Serilog.Events.LogEventLevel.Debug)
                     .Enrich.WithCaller()
                     .WriteTo.Console(
-                        Serilog.Events.LogEventLevel.Information,
+                        Serilog.Events.LogEventLevel.Debug,
                         "[RequestId={RequestId}] " + CallerEnricherOutputTemplate.Default
                     )
                     .WriteTo.File(
                         new DirectoryInfo(cmdMain.LogDirPath).FullName,
                         "Biz.Bizadm.ModelRouter.Server.log",
-                        Serilog.Events.LogEventLevel.Information,
+                        Serilog.Events.LogEventLevel.Debug,
                         "[RequestId={RequestId}] " + CallerEnricherOutputTemplate.Default,
                         rollingInterval: RollingInterval.Day,
                         retainedFileCountLimit: 12

@@ -58,7 +58,10 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             return Encoding.UTF8.GetBytes(responses.ToJsonString(CompactJson));
         }
 
-        public static byte[] ToChatCompletionResponse(JsonObject responsesRoot)
+        public static byte[] ToChatCompletionResponse(
+            JsonObject responsesRoot,
+            ILogger? logger = null,
+            string? requestId = null)
         {
             string id = responsesRoot["id"]?.GetValue<string>() ?? $"chatcmpl-{Guid.NewGuid():N}";
             string model = responsesRoot["model"]?.GetValue<string>() ?? string.Empty;
@@ -136,7 +139,12 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             };
 
             if (responsesRoot["usage"] is JsonObject usage)
-                chat["usage"] = ConvertUsage(usage);
+            {
+                JsonObject convertedUsage = ConvertUsage(usage);
+                if (logger is not null)
+                    LogUsage(logger, usage, convertedUsage, model, stream: false, includeUsage: false, terminalType: "response", requestId: requestId);
+                chat["usage"] = convertedUsage;
+            }
 
             return Encoding.UTF8.GetBytes(chat.ToJsonString(CompactJson));
         }
@@ -222,6 +230,8 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             public int NextToolIndex { get; set; }
             public string? FinishReason { get; set; }
             public JsonObject? Usage { get; set; }
+            public JsonObject? OriginalUsage { get; set; }
+            public string? RequestId { get; set; }
             public JsonArray? ContentFilters { get; set; }
 
             public int RegisterFunctionCall(string? itemId, string? callId)
@@ -617,9 +627,10 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             string? modelHint,
             bool includeUsage,
             ILogger logger,
-            [EnumeratorCancellation] CancellationToken cancellationToken)
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            string? requestId = null)
         {
-            StreamState state = new StreamState { Model = modelHint ?? string.Empty };
+            StreamState state = new StreamState { Model = modelHint ?? string.Empty, RequestId = requestId };
             Stopwatch stopwatch = Stopwatch.StartNew();
             logger.LogInformation("Bridge SSE start Model={Model}", state.Model);
 
@@ -684,7 +695,10 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                                 JsonObject? responseUsage = evt["response"]?["usage"] as JsonObject
                                     ?? evt["usage"] as JsonObject;
                                 if (responseUsage is not null)
+                                {
+                                    state.OriginalUsage = (JsonObject)responseUsage.DeepClone();
                                     state.Usage = ConvertUsage(responseUsage);
+                                }
 
                                 JsonArray? contentFilters = GetContentFilters(evt["response"] as JsonObject ?? evt);
                                 if (contentFilters is not null)
@@ -763,6 +777,9 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 }
                 else
                 {
+                    if (state.OriginalUsage is not null && state.Usage is not null)
+                        LogUsage(logger, state.OriginalUsage, state.Usage, state.Model, stream: true, includeUsage: includeUsage, terminalType: state.TerminalType, requestId: state.RequestId);
+
                     if (mappedIncomplete)
                         state.FinishReason = ResolveFinishReason(state.IncompleteReason, hasToolCalls: state.FinishReason == "tool_calls");
 
@@ -1313,16 +1330,45 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             return builder.Length == 0 ? null : builder.ToString();
         }
 
+        private static void LogUsage(
+            ILogger logger,
+            JsonObject originalUsage,
+            JsonObject convertedUsage,
+            string model,
+            bool stream,
+            bool includeUsage,
+            string? terminalType,
+            string? requestId)
+        {
+            logger.LogDebug(
+                "Bridge usage RequestId={RequestId} Model={Model} Stream={Stream} IncludeUsage={IncludeUsage} Terminal={Terminal} OriginalUsage={OriginalUsage} ConvertedUsage={ConvertedUsage}",
+                requestId ?? "-",
+                model,
+                stream,
+                includeUsage,
+                terminalType ?? "-",
+                originalUsage.ToJsonString(CompactJson),
+                convertedUsage.ToJsonString(CompactJson));
+        }
+
         private static JsonObject ConvertUsage(JsonObject usage)
         {
             int input = usage["input_tokens"]?.GetValue<int>() ?? 0;
             int output = usage["output_tokens"]?.GetValue<int>() ?? 0;
-            return new JsonObject
+            JsonObject converted = new JsonObject
             {
                 ["prompt_tokens"] = input,
                 ["completion_tokens"] = output,
                 ["total_tokens"] = usage["total_tokens"]?.GetValue<int>() ?? input + output
             };
+
+            if (usage["input_tokens_details"] is JsonNode inputDetails)
+                converted["prompt_tokens_details"] = inputDetails.DeepClone();
+
+            if (usage["output_tokens_details"] is JsonNode outputDetails)
+                converted["completion_tokens_details"] = outputDetails.DeepClone();
+
+            return converted;
         }
 
         private static void CopyIfPresent(JsonObject source, JsonObject target, string propertyName)

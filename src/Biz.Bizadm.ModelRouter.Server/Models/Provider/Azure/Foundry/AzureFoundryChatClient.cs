@@ -44,7 +44,8 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
         public async Task<HttpResponseMessage> ForwardChatCompletionsAsync(
             Stream requestBody,
             string? contentType,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? requestId = null)
         {
             using MemoryStream bufferedBody = new MemoryStream();
             await requestBody.CopyToAsync(bufferedBody, cancellationToken);
@@ -105,7 +106,8 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                         bridgeEffort,
                         contentType,
                         mapper,
-                        cancellationToken);
+                        cancellationToken,
+                        requestId);
                 }
 
                 byte[] nonePayload = ApplyChatReasoningEffort(root, "none", baseline);
@@ -125,7 +127,8 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                     bridgeEffort,
                     contentType,
                     mapper,
-                    cancellationToken);
+                    cancellationToken,
+                    requestId);
             }
 
             // PassThrough
@@ -205,7 +208,8 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             string reasoningEffort,
             string? contentType,
             ToolCallIdMapper mapper,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? requestId)
         {
             string? modelHint = chatRoot["model"]?.GetValue<string>();
             bool stream = chatRoot["stream"] is JsonValue streamValue
@@ -288,7 +292,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                     }
                 }
 
-                byte[] chatBody = ChatResponsesBridge.ToChatCompletionResponse(responsesRoot);
+                byte[] chatBody = ChatResponsesBridge.ToChatCompletionResponse(responsesRoot, _logger, requestId);
                 if (TryParseObject(chatBody, out JsonObject? chatRootObject)
                     && chatRootObject is not null
                     && mapper.RewriteChatCompletionsResponse(chatRootObject))
@@ -340,7 +344,8 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 includeUsage,
                 mapper,
                 _logger,
-                cancellationToken);
+                cancellationToken,
+                requestId);
 
             HttpResponseMessage response = new HttpResponseMessage(upstream.StatusCode)
             {
@@ -773,6 +778,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             private readonly ToolCallIdMapper _mapper;
             private readonly ILogger<AzureFoundryChatClient> _logger;
             private readonly CancellationToken _cancellationToken;
+            private readonly string? _requestId;
 
             public SseTransformContent(
                 HttpResponseMessage upstreamResponse,
@@ -781,7 +787,8 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 bool includeUsage,
                 ToolCallIdMapper mapper,
                 ILogger<AzureFoundryChatClient> logger,
-                CancellationToken cancellationToken)
+                CancellationToken cancellationToken,
+                string? requestId)
             {
                 _upstreamResponse = upstreamResponse;
                 _upstreamStream = upstreamStream;
@@ -790,6 +797,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 _mapper = mapper;
                 _logger = logger;
                 _cancellationToken = cancellationToken;
+                _requestId = requestId;
             }
 
             protected override async Task SerializeToStreamAsync(
@@ -803,7 +811,8 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                                        _modelHint,
                                        _includeUsage,
                                        _logger,
-                                       _cancellationToken))
+                                       _cancellationToken,
+                                       _requestId))
                     {
                         string output = ApplyMapperToBridgeSseEvent(chunk, _mapper);
                         byte[] bytes = Encoding.UTF8.GetBytes(output);

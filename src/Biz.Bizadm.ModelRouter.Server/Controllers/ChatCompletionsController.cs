@@ -25,7 +25,8 @@ namespace Biz.Bizadm.ModelRouter.Server.Controllers
             using HttpResponseMessage upstream = await _azureFoundryChatClient.ForwardChatCompletionsAsync(
                 Request.Body,
                 Request.ContentType,
-                cancellationToken);
+                cancellationToken,
+                HttpContext.TraceIdentifier);
 
             Response.StatusCode = (int)upstream.StatusCode;
 
