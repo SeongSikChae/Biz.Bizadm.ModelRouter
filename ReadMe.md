@@ -14,8 +14,9 @@ Azure AI Foundry의 OpenAI 호환 API를 프록시하는 ASP.NET Core 서버입�
   - `/v1/chat/completions` 직통과 `/v1/responses` 직통에도 동일하게 적용
 - 모델별 reasoning / chat+tools 정책 (`ReasoningByModel`)
   - tools 없음: `Effort`를 `reasoning_effort`로 주입
+  - 요청 모델명 접미사로 effort 지정 가능 (아래 [모델명 effort 접미사](#모델명-effort-접미사) 참고)
   - tools + `BridgeToResponses`: Responses API로 우회 후 chat.completions 형식으로 응답 변환 (Cursor/에이전트 권장)
-  - tools + `ForceNone`: chat에 `reasoning_effort: none` (LUNA 저하 경로; `SupportsNone: false`면 bridge 폴백)
+  - tools + `ForceNone`: chat에 `reasoning_effort: none` (지연/비용 우선 저하 경로; `SupportsNone: false`면 bridge 폴백)
   - `/v1/responses`에는 `Effort`를 `reasoning.effort`로 주입
   - 하위 호환: `ReasoningEffortByModel` 문자열 맵은 tools 시 `BridgeToResponses`로 취급
 - 콘솔 및 날짜별 파일 로그 기록 (`X-Request-Id` 응답 헤더 포함)
@@ -56,14 +57,10 @@ OpenAIEndpoint: https://YOUR-RESOURCE.services.ai.azure.com
 OpenAIKey: replace-with-foundry-api-key
 
 ReasoningByModel:
-  Bizadm-GPT-6-LUNA:
+  YOUR-MODEL:
     Effort: medium
     ChatToolsMode: BridgeToResponses
     SupportsNone: true
-  Bizadm-GPT-6.1-SOL:
-    Effort: medium
-    ChatToolsMode: BridgeToResponses
-    SupportsNone: false
 ```
 
 | 항목 | 필수 | 설명 |
@@ -82,19 +79,50 @@ ReasoningByModel:
 
 `OpenAIEndpoint`에는 `openai/v1`을 포함하지 않습니다. 서버가 `/openai/v1/chat/completions`, `/openai/v1/responses`, `/openai/v1/models` 경로를 추가합니다.
 
-### 모델별 reasoning / tools (Foundry·OpenAI 문서 기준)
+### 모델별 reasoning / tools
 
-| 배포명 | 기반 모델 | 허용 effort | chat + function tools |
+`ReasoningByModel` 키는 Foundry에 등록한 배포명(요청 `model` 값)과 맞춥니다. 허용 effort·chat+tools 제약은 기반 모델에 따르며, YAML의 `SupportsNone` / `ChatToolsMode`로 라우터 정책만 지정합니다.
+
+#### 모델명 effort 접미사
+
+요청 `model` 끝에 `-none`, `-low`, `-medium`, `-high`, `-xhigh`, `-max`를 붙이면 YAML `Effort`보다 우선해 해당 effort를 주입합니다. upstream에는 접미사를 뺀 베이스 배포명만 전달합니다.
+
+예: 배포명이 `my-luna`일 때 `my-luna-high` → upstream `model=my-luna`, `reasoning_effort`/`reasoning.effort=high`
+
+라우터가 인식하는 접미사는 위 6종입니다. 실제 API가 받는 값은 기반 모델마다 다르므로, `SupportsNone`과 아래 표를 맞춰 두세요. `SupportsNone: false`인데 `none`이 오면 라우터가 `low`로 보정합니다.
+
+기반 모델별 허용 effort·tools 제약(OpenAI / Azure Foundry 문서 기준):
+
+| 기반 모델 | 허용 effort | 기본값 | chat + function tools |
 | --- | --- | --- | --- |
-| `Bizadm-GPT-6-LUNA` | gpt-6-luna | `none`, `low`, `medium`, `high`, `xhigh`, `max` | chat에서는 `none`만 가능. **reasoning+tools는 Responses** |
-| `Bizadm-GPT-6.1-SOL` | gpt-6.1-sol | `low`, `medium`, `high`, `xhigh`, `max` (`none` 불가) | chat는 tools 없이만. **tools는 Responses 필수** |
+| `gpt-6-luna` | `none`, `low`, `medium`, `high`, `xhigh`, `max` | `medium` | chat에서는 `none`만 가능. reasoning+tools는 Responses |
+| `gpt-6.1-sol` | `low`, `medium`, `high`, `xhigh`, `max` (`none`·`minimal` 불가) | `medium` | chat는 tools 없이만. tools는 Responses 필수 |
+| `gpt-6-astra` | `low`, `medium`, `high`, `xhigh`, `max` (`none` 불가) | `medium` | chat는 tools 없이만. tools는 Responses 필수 |
+
+권장 YAML 예:
+
+```yaml
+ReasoningByModel:
+  my-luna:   # 기반: gpt-6-luna
+    Effort: medium
+    ChatToolsMode: BridgeToResponses
+    SupportsNone: true
+  my-sol:    # 기반: gpt-6.1-sol
+    Effort: medium
+    ChatToolsMode: BridgeToResponses
+    SupportsNone: false
+  my-astra:  # 기반: gpt-6-astra
+    Effort: medium
+    ChatToolsMode: BridgeToResponses
+    SupportsNone: false
+```
 
 `ChatToolsMode` 값:
 
 | 값 | 동작 |
 | --- | --- |
 | `BridgeToResponses` | tools가 있으면 Responses로 우회하고 chat.completions 응답으로 변환. Cursor/에이전트 권장 |
-| `ForceNone` | chat에 `reasoning_effort: none`. LUNA의 지연/비용 우선 저하 경로. `SupportsNone: false`면 bridge로 폴백 |
+| `ForceNone` | chat에 `reasoning_effort: none`. 지연/비용 우선 저하 경로. `SupportsNone: false`면 bridge로 폴백 |
 | `PassThrough` | none 강제 없음. `Effort`만 선택 주입 |
 
 BridgeToResponses 스트림은 출력 청크 전에 rate-limit/`TPM` 실패가 오면 HTTP 429와 JSON 오류 본문으로 반환합니다. `max_output_tokens` 종료는 `finish_reason: length`, `content_filter` 종료는 `finish_reason: content_filter`로 전달됩니다. Azure가 `content_filters`를 실어 주면 choice에 `content_filters`(및 해당 시 `content_filter_results`)를 보존하고, 차단·필터 카테고리 요약을 로그에 남깁니다. 그 외 `response.failed`/`error` 및 매핑되지 않은 `response.incomplete`는 OpenAI 호환 SSE 오류 이벤트로 전달하며(사유가 있으면 message에 포함), 로그에 `Bridge SSE start`, `terminal`, `end`와 이벤트·청크 수를 기록합니다. 요청에 `stream_options.include_usage: true`가 있으면 성공 종료 시 `finish_reason` 청크 뒤에 `usage` 청크를 전달합니다. 비스트리밍에서도 `content_filter`/`max_output_tokens` incomplete는 위 finish_reason으로 변환하고, 나머지 `failed`/`incomplete`는 HTTP 502와 JSON 오류 본문으로 반환합니다.

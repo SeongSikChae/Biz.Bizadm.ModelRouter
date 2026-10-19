@@ -57,16 +57,22 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             bool idsRewritten = mapper.RewriteChatCompletionsRequest(root);
             byte[] baseline = idsRewritten ? SerializeJsonObject(root) : original;
 
+            TryGetModelName(root, out string? requestedModel);
+            TrySplitModelEffortSuffix(requestedModel, out string? model, out string? suffixEffort);
+            if (suffixEffort is not null)
+            {
+                root["model"] = model;
+                baseline = SerializeJsonObject(root);
+            }
+
             bool hasTools = HasFunctionTools(root);
-            TryGetModelName(root, out string? model);
             _reasoningByModel.TryGetValue(model ?? string.Empty, out ModelReasoningPolicy? policy);
 
             if (!hasTools)
             {
-                if (policy is not null
-                    && !string.IsNullOrWhiteSpace(policy.Effort))
+                string? effort = ResolveEffort(suffixEffort, policy?.Effort, policy?.SupportsNone ?? true);
+                if (effort is not null)
                 {
-                    string effort = NormalizeEffort(policy.Effort, policy.SupportsNone);
                     byte[] payload = ApplyChatReasoningEffort(root, effort, baseline);
                     return await PostChatAndRewriteAsync(payload, contentType, mapper, cancellationToken);
                 }
@@ -83,11 +89,11 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             {
                 if (!supportsNone)
                 {
-                    string bridgeEffort = NormalizeEffort(
-                        string.IsNullOrWhiteSpace(configuredEffort)
-                            ? DefaultEffortWhenMissing
-                            : configuredEffort,
-                        supportsNone: false);
+                    string bridgeEffort = ResolveEffort(
+                        suffixEffort,
+                        configuredEffort,
+                        supportsNone: false,
+                        fallback: DefaultEffortWhenMissing)!;
 
                     _logger.LogInformation(
                         "ForceNone unsupported for model; bridging to Responses Model={Model} Effort={Effort}",
@@ -108,11 +114,11 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
 
             if (mode == ChatToolsMode.BridgeToResponses)
             {
-                string bridgeEffort = NormalizeEffort(
-                    string.IsNullOrWhiteSpace(configuredEffort)
-                        ? DefaultEffortWhenMissing
-                        : configuredEffort,
-                    supportsNone);
+                string bridgeEffort = ResolveEffort(
+                    suffixEffort,
+                    configuredEffort,
+                    supportsNone,
+                    fallback: DefaultEffortWhenMissing)!;
 
                 return await ForwardViaResponsesAsync(
                     root,
@@ -123,10 +129,10 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             }
 
             // PassThrough
-            if (!string.IsNullOrWhiteSpace(configuredEffort))
+            string? passThroughEffort = ResolveEffort(suffixEffort, configuredEffort, supportsNone);
+            if (passThroughEffort is not null)
             {
-                string effort = NormalizeEffort(configuredEffort, supportsNone);
-                byte[] payload = ApplyChatReasoningEffort(root, effort, baseline);
+                byte[] payload = ApplyChatReasoningEffort(root, passThroughEffort, baseline);
                 return await PostChatAndRewriteAsync(payload, contentType, mapper, cancellationToken);
             }
 
@@ -150,13 +156,19 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             byte[] baseline = idsRewritten ? SerializeJsonObject(root) : original;
             byte[] payload = baseline;
 
-            if (TryGetModelName(root, out string? model)
-                && model is not null
-                && _reasoningByModel.TryGetValue(model, out ModelReasoningPolicy? policy)
-                && policy is not null
-                && !string.IsNullOrWhiteSpace(policy.Effort))
+            TryGetModelName(root, out string? requestedModel);
+            TrySplitModelEffortSuffix(requestedModel, out string? model, out string? suffixEffort);
+            if (suffixEffort is not null)
             {
-                string effort = NormalizeEffort(policy.Effort, policy.SupportsNone);
+                root["model"] = model;
+                baseline = SerializeJsonObject(root);
+                payload = baseline;
+            }
+
+            _reasoningByModel.TryGetValue(model ?? string.Empty, out ModelReasoningPolicy? policy);
+            string? effort = ResolveEffort(suffixEffort, policy?.Effort, policy?.SupportsNone ?? true);
+            if (effort is not null)
+            {
                 payload = ApplyResponsesReasoningEffort(root, effort, baseline);
             }
 
@@ -633,6 +645,54 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 return mode;
 
             return ChatToolsMode.PassThrough;
+        }
+
+        private static string? ResolveEffort(
+            string? suffixEffort,
+            string? configuredEffort,
+            bool supportsNone,
+            string? fallback = null)
+        {
+            string? effort = !string.IsNullOrWhiteSpace(suffixEffort)
+                ? suffixEffort
+                : !string.IsNullOrWhiteSpace(configuredEffort)
+                    ? configuredEffort
+                    : fallback;
+
+            return string.IsNullOrWhiteSpace(effort)
+                ? null
+                : NormalizeEffort(effort, supportsNone);
+        }
+
+        private static bool TrySplitModelEffortSuffix(
+            string? requestedModel,
+            out string? baseModel,
+            out string? effort)
+        {
+            baseModel = requestedModel;
+            effort = null;
+
+            if (string.IsNullOrWhiteSpace(requestedModel))
+                return false;
+
+            int separatorIndex = requestedModel.LastIndexOf('-');
+            if (separatorIndex <= 0 || separatorIndex == requestedModel.Length - 1)
+                return false;
+
+            string suffix = requestedModel[(separatorIndex + 1)..];
+            if (suffix.Equals("none", StringComparison.OrdinalIgnoreCase)
+                || suffix.Equals("low", StringComparison.OrdinalIgnoreCase)
+                || suffix.Equals("medium", StringComparison.OrdinalIgnoreCase)
+                || suffix.Equals("high", StringComparison.OrdinalIgnoreCase)
+                || suffix.Equals("xhigh", StringComparison.OrdinalIgnoreCase)
+                || suffix.Equals("max", StringComparison.OrdinalIgnoreCase))
+            {
+                baseModel = requestedModel[..separatorIndex];
+                effort = suffix.ToLowerInvariant();
+                return true;
+            }
+
+            return false;
         }
 
         private static string NormalizeEffort(string effort, bool supportsNone)

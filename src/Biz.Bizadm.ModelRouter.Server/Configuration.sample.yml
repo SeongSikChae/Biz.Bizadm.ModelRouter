@@ -9,6 +9,9 @@ Port: 80 # 수신 포트
 OpenAIEndpoint: "https://YOUR-RESOURCE.services.ai.azure.com" # Azure AI Foundry OpenAI 호환 엔드포인트 (openai/v1 경로 제외)
 OpenAIKey: "replace-with-foundry-api-key"
 
+# 요청 model 접미사로 설정 Effort를 재정의할 수 있습니다:
+# 예: Bizadm-GPT-6-LUNA-high 요청은 upstream model=Bizadm-GPT-6-LUNA, effort=high 로 전달
+# 허용 접미사: -none, -low, -medium, -high, -xhigh, -max
 # 권장: 모델별 reasoning / chat+tools 정책
 # ChatToolsMode:
 #   BridgeToResponses - tools+reasoning → Responses 우회 후 chat 응답으로 변환 (Cursor/에이전트 권장)
