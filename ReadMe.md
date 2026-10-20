@@ -1,10 +1,10 @@
 # Biz.Bizadm.ModelRouter
 
-Azure AI Foundry의 OpenAI 호환 API를 프록시하는 ASP.NET Core 서버입니다. 클라이언트에는 OpenAI 호환 엔드포인트를 제공하고, 요청을 설정된 Foundry 엔드포인트로 전달합니다.
+Azure AI Foundry 또는 OpenAI API를 프록시하는 ASP.NET Core 서버입니다. 클라이언트에는 OpenAI 호환 엔드포인트를 제공하고, 요청을 설정된 공급자 엔드포인트로 전달합니다.
 
 ## 주요 기능
 
-- `chat/completions` 요청을 Azure AI Foundry로 전달
+- `chat/completions` 요청을 Azure AI Foundry 또는 OpenAI로 전달
 - Responses API를 직접 호출하고 응답을 그대로 전달
 - 모델 목록 및 단일 모델 정보 조회
 - tool call id 양방향 매핑 (요청 단위)
@@ -37,7 +37,7 @@ Azure AI Foundry의 OpenAI 호환 API를 프록시하는 ASP.NET Core 서버입�
 ## 요구 사항
 
 - .NET 10 SDK 또는 런타임
-- Azure AI Foundry의 OpenAI 호환 엔드포인트 및 API 키
+- Azure AI Foundry 또는 OpenAI API 엔드포인트 및 API 키
 - 서버 설정 YAML 파일
 - `UseSsl: true`인 경우 PKCS#12/PFX 인증서 파일
 
@@ -53,8 +53,14 @@ Port: 80
 # ServerCertificatePassword: replace-with-certificate-password
 # CertificateChain: ""
 # IncludeCipherSuites: "TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
+Provider: AzureFoundry # 생략 시 AzureFoundry; OpenAI 사용 시 OpenAI로 변경
 OpenAIEndpoint: https://YOUR-RESOURCE.services.ai.azure.com/openai
-OpenAIKey: replace-with-foundry-api-key
+OpenAIKey: replace-with-provider-api-key
+
+# OpenAI 사용 예시:
+# Provider: OpenAI
+# OpenAIEndpoint: https://api.openai.com
+# OpenAIKey: replace-with-openai-api-key
 
 ReasoningByModel:
   YOUR-MODEL:
@@ -72,16 +78,17 @@ ReasoningByModel:
 | `ServerCertificatePassword` | `UseSsl`일 때 | 인증서 암호 |
 | `CertificateChain` | 아니오 | 체인에 포함할 인증서 SimpleName (쉼표 구분) |
 | `IncludeCipherSuites` | 아니오 | 허용 TLS 암호 스위트 (`TlsCipherSuite` enum 이름, 쉼표 구분) |
-| `OpenAIEndpoint` | 예 | Foundry OpenAI 엔드포인트. `/v1` 이전까지 (`.../openai`) |
-| `OpenAIKey` | 예 | Foundry API 키 (`api-key` 헤더로 전달) |
+| `Provider` | 아니오 | `AzureFoundry` 또는 `OpenAI`. 생략 시 `AzureFoundry` |
+| `OpenAIEndpoint` | 예 | 선택한 공급자의 OpenAI 호환 API 기본 URL. Azure Foundry는 `.../openai`, OpenAI는 `https://api.openai.com` |
+| `OpenAIKey` | 예 | 선택한 공급자의 API 키. Azure Foundry는 `api-key`, OpenAI는 `Authorization: Bearer`로 전달 |
 | `ReasoningByModel` | 아니오 | 모델별 Effort / ChatToolsMode / SupportsNone |
 | `ReasoningEffortByModel` | 아니오 | 하위 호환 effort 문자열 맵 (tools 시 BridgeToResponses) |
 
-`OpenAIEndpoint`는 `/v1` 이전까지만 지정합니다. `/v1` 이후가 포함되어 있으면 서버가 자동으로 제거한 뒤 `/v1/chat/completions`, `/v1/responses`, `/v1/models` 경로를 추가합니다.
+`OpenAIEndpoint`는 `/v1` 이전까지만 지정합니다. `/v1` 이후가 포함되어 있으면 서버가 자동으로 제거한 뒤 `/v1/chat/completions`, `/v1/responses`, `/v1/models` 경로를 추가합니다. `Provider`를 생략한 기존 설정은 `AzureFoundry`로 처리됩니다.
 
 ### 모델별 reasoning / tools
 
-`ReasoningByModel` 키는 Foundry에 등록한 배포명(요청 `model` 값)과 맞춥니다. 허용 effort·chat+tools 제약은 기반 모델에 따르며, YAML의 `SupportsNone` / `ChatToolsMode`로 라우터 정책만 지정합니다.
+`ReasoningByModel` 키는 선택한 공급자에 등록한 모델명 또는 배포명(요청 `model` 값)과 맞춥니다. 허용 effort·chat+tools 제약은 기반 모델에 따르며, YAML의 `SupportsNone` / `ChatToolsMode`로 라우터 정책만 지정합니다.
 
 #### 모델명 effort 접미사
 

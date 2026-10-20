@@ -150,7 +150,7 @@ namespace Biz.Bizadm.ModelRouter.Server
 
             builder.Services.AddHttpClient<AzureFoundryChatClient>((_, httpClient) =>
             {
-                httpClient.DefaultRequestHeaders.Add("api-key", configuration.OpenAIKey);
+                ConfigureProviderAuthentication(httpClient, configuration);
                 httpClient.Timeout = Timeout.InfiniteTimeSpan;
             });
 
@@ -159,6 +159,22 @@ namespace Biz.Bizadm.ModelRouter.Server
             builder.Services.AddOpenApi();
 
             return builder.Build();
+        }
+
+        internal static void ConfigureProviderAuthentication(HttpClient httpClient, Configuration configuration)
+        {
+            switch (configuration.Provider)
+            {
+                case Provider.AzureFoundry:
+                    httpClient.DefaultRequestHeaders.Add("api-key", configuration.OpenAIKey);
+                    break;
+                case Provider.OpenAI:
+                    httpClient.DefaultRequestHeaders.Authorization =
+                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", configuration.OpenAIKey);
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(configuration.Provider), configuration.Provider, "Unsupported provider.");
+            }
         }
 
         private static async Task StartAsync(WebApplication app, CmdMain cmdMain, Configuration configuration)

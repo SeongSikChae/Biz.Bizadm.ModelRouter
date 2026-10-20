@@ -2,8 +2,17 @@
 
 namespace Biz.Bizadm.ModelRouter.Server
 {
-    public sealed class Configuration
+    public enum Provider
     {
+        AzureFoundry = 0,
+        OpenAI = 1
+    }
+
+    public sealed class Configuration : IValidatableConfiguration
+    {
+        [Property(PropertyType.ENUM, required: false, DefaultValue = "AzureFoundry")]
+        public Provider Provider { get; set; } = Provider.AzureFoundry;
+
         [Property(PropertyType.STRING, required: true)]
         public string ContentRootPath { get; set; } = null!;
 
@@ -54,5 +63,11 @@ namespace Biz.Bizadm.ModelRouter.Server
         ///   Bizadm-GPT-6-LUNA: medium
         /// </summary>
         public Dictionary<string, string>? ReasoningEffortByModel { get; set; }
+
+        public void Validate()
+        {
+            if (!Enum.IsDefined(Provider))
+                throw new ArgumentOutOfRangeException(nameof(Provider), Provider, "Unsupported provider.");
+        }
     }
 }
