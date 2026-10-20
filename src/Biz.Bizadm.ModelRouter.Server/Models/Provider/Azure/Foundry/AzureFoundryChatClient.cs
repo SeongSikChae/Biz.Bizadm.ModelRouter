@@ -9,9 +9,9 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
 {
     public sealed class AzureFoundryChatClient
     {
-        private const string ChatCompletionsPath = "openai/v1/chat/completions";
-        private const string ResponsesPath = "openai/v1/responses";
-        private const string ModelsPath = "openai/v1/models";
+        private const string ChatCompletionsPath = "v1/chat/completions";
+        private const string ResponsesPath = "v1/responses";
+        private const string ModelsPath = "v1/models";
         private const int MaxLoggedErrorBodyChars = 4096;
         /// <summary>SupportsNone=false인 모델에서 Effort=none일 때 쓰는 최저 허용 effort.</summary>
         private const string LowestEffortWhenNoneUnsupported = "low";
@@ -34,11 +34,33 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
         {
             _httpClient = httpClient;
             _logger = logger;
-            _endpoint = configuration.OpenAIEndpoint.TrimEnd('/');
+            _endpoint = NormalizeOpenAIEndpoint(configuration.OpenAIEndpoint);
             _chatCompletionsUri = new Uri($"{_endpoint}/{ChatCompletionsPath}");
             _responsesUri = new Uri($"{_endpoint}/{ResponsesPath}");
             _modelsUri = new Uri($"{_endpoint}/{ModelsPath}");
             _reasoningByModel = BuildReasoningLookup(configuration);
+        }
+
+        /// <summary>
+        /// OpenAIEndpoint는 /v1 이전까지만 사용한다.
+        /// /v1 및 이후 경로가 포함되어 있으면 제거한다.
+        /// </summary>
+        internal static string NormalizeOpenAIEndpoint(string endpoint)
+        {
+            string trimmed = endpoint.Trim().TrimEnd('/');
+
+            int v1Index = trimmed.IndexOf("/v1", StringComparison.OrdinalIgnoreCase);
+            if (v1Index >= 0)
+            {
+                int after = v1Index + 3;
+                if (after >= trimmed.Length
+                    || trimmed[after] is '/' or '?' or '#')
+                {
+                    trimmed = trimmed[..v1Index].TrimEnd('/');
+                }
+            }
+
+            return trimmed;
         }
 
         public async Task<HttpResponseMessage> ForwardChatCompletionsAsync(

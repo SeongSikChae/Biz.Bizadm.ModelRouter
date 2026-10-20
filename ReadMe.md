@@ -53,7 +53,7 @@ Port: 80
 # ServerCertificatePassword: replace-with-certificate-password
 # CertificateChain: ""
 # IncludeCipherSuites: "TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
-OpenAIEndpoint: https://YOUR-RESOURCE.services.ai.azure.com
+OpenAIEndpoint: https://YOUR-RESOURCE.services.ai.azure.com/openai
 OpenAIKey: replace-with-foundry-api-key
 
 ReasoningByModel:
@@ -72,12 +72,12 @@ ReasoningByModel:
 | `ServerCertificatePassword` | `UseSsl`일 때 | 인증서 암호 |
 | `CertificateChain` | 아니오 | 체인에 포함할 인증서 SimpleName (쉼표 구분) |
 | `IncludeCipherSuites` | 아니오 | 허용 TLS 암호 스위트 (`TlsCipherSuite` enum 이름, 쉼표 구분) |
-| `OpenAIEndpoint` | 예 | Foundry 기본 endpoint. `openai/v1` 경로 제외 |
+| `OpenAIEndpoint` | 예 | Foundry OpenAI 엔드포인트. `/v1` 이전까지 (`.../openai`) |
 | `OpenAIKey` | 예 | Foundry API 키 (`api-key` 헤더로 전달) |
 | `ReasoningByModel` | 아니오 | 모델별 Effort / ChatToolsMode / SupportsNone |
 | `ReasoningEffortByModel` | 아니오 | 하위 호환 effort 문자열 맵 (tools 시 BridgeToResponses) |
 
-`OpenAIEndpoint`에는 `openai/v1`을 포함하지 않습니다. 서버가 `/openai/v1/chat/completions`, `/openai/v1/responses`, `/openai/v1/models` 경로를 추가합니다.
+`OpenAIEndpoint`는 `/v1` 이전까지만 지정합니다. `/v1` 이후가 포함되어 있으면 서버가 자동으로 제거한 뒤 `/v1/chat/completions`, `/v1/responses`, `/v1/models` 경로를 추가합니다.
 
 ### 모델별 reasoning / tools
 

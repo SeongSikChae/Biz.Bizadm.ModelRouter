@@ -221,6 +221,19 @@ public class ChatResponsesBridgeUsageTests
         Assert.Equal(800, rewrittenChunk["usage"]!["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
     }
 
+    [Theory]
+    [InlineData("https://foundry.example/openai", "https://foundry.example/openai")]
+    [InlineData("https://foundry.example/openai/", "https://foundry.example/openai")]
+    [InlineData("https://foundry.example/openai/v1", "https://foundry.example/openai")]
+    [InlineData("https://foundry.example/openai/v1/", "https://foundry.example/openai")]
+    [InlineData("https://foundry.example/openai/v1/chat/completions", "https://foundry.example/openai")]
+    [InlineData("https://api.openai.com", "https://api.openai.com")]
+    [InlineData("https://api.openai.com/v1", "https://api.openai.com")]
+    public void NormalizeOpenAIEndpoint_StripsFromV1(string input, string expected)
+    {
+        Assert.Equal(expected, AzureFoundryChatClient.NormalizeOpenAIEndpoint(input));
+    }
+
     [Fact]
     public async Task DirectChatAndResponsesForwarding_PreserveProviderUsagePayloads()
     {
@@ -240,7 +253,7 @@ public class ChatResponsesBridgeUsageTests
             httpClient,
             new Biz.Bizadm.ModelRouter.Server.Configuration
             {
-                OpenAIEndpoint = "https://foundry.example",
+                OpenAIEndpoint = "https://foundry.example/openai",
                 OpenAIKey = "test-key"
             },
             NullLogger<AzureFoundryChatClient>.Instance);
