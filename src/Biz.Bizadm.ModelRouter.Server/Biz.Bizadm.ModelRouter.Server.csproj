@@ -12,9 +12,9 @@
     <PackageReference Include="Biz.Bizadm.Serilog.Sinks.File.Extensions" Version="1.0.0" />
     <PackageReference Include="Biz.Bizadm.System.Configuration.Extensions" Version="1.0.1" />
     <PackageReference Include="CommandLineParser" Version="2.9.1" />
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.12" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.12" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.12" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.13" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.13" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.13" />
     <PackageReference Include="Serilog.Extensions.Hosting" Version="10.0.0" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
     <PackageReference Include="YamlDotNet" Version="18.1.0" />

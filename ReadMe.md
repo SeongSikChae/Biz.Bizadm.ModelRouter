@@ -36,10 +36,14 @@ Azure AI Foundry 또는 OpenAI API를 프록시하는 ASP.NET Core 서버입니�
 
 ## 요구 사항
 
-- .NET 10 SDK 또는 런타임
+- .NET 10.0.13 이상 SDK 또는 ASP.NET Core 런타임
 - Azure AI Foundry 또는 OpenAI API 엔드포인트 및 API 키
 - 서버 설정 YAML 파일
 - `UseSsl: true`인 경우 PKCS#12/PFX 인증서 파일
+
+### 보안 업데이트
+
+[CVE-2026-88092](https://www.cve.org/CVERecord?id=CVE-2026-88092)는 ASP.NET Core의 HTTP 요청 스머글링 취약점입니다. ASP.NET Core 10.0.0~10.0.12가 영향을 받으므로 10.0.13 이상으로 업데이트하세요. 프레임워크 종속 배포는 서버의 ASP.NET Core 런타임을 업데이트하고 애플리케이션을 재시작해야 하며, self-contained 배포는 수정된 런타임으로 다시 빌드하고 재배포해야 합니다.
 
 ## 설정
 
