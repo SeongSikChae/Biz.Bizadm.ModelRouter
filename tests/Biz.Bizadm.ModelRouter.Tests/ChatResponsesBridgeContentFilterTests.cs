@@ -5,9 +5,10 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Biz.Bizadm.ModelRouter.Tests;
 
+[TestClass]
 public class ChatResponsesBridgeContentFilterTests
 {
-    [Fact]
+    [TestMethod]
     public void ToChatCompletionResponse_ContentFilter_SetsFinishReasonAndPreservesFilters()
     {
         JsonObject responsesRoot = new()
@@ -60,22 +61,22 @@ public class ChatResponsesBridgeContentFilterTests
             }
         };
 
-        Assert.False(ChatResponsesBridge.TryCreateErrorResponse(responsesRoot, out _));
+        Assert.IsFalse(ChatResponsesBridge.TryCreateErrorResponse(responsesRoot, out _));
 
         byte[] body = ChatResponsesBridge.ToChatCompletionResponse(responsesRoot);
         JsonObject chat = JsonNode.Parse(body)!.AsObject();
         JsonObject choice = chat["choices"]![0]!.AsObject();
 
-        Assert.Equal("content_filter", choice["finish_reason"]?.GetValue<string>());
-        Assert.Equal("partial", choice["message"]?["content"]?.GetValue<string>());
-        Assert.NotNull(choice["content_filters"]);
-        Assert.Equal(true, choice["content_filter_results"]?["hate"]?["filtered"]?.GetValue<bool>());
-        Assert.Equal(
+        Assert.AreEqual("content_filter", choice["finish_reason"]?.GetValue<string>());
+        Assert.AreEqual("partial", choice["message"]?["content"]?.GetValue<string>());
+        Assert.IsNotNull(choice["content_filters"]);
+        Assert.AreEqual(true, choice["content_filter_results"]?["hate"]?["filtered"]?.GetValue<bool>());
+        Assert.AreEqual(
             "completion:hate:high",
             ChatResponsesBridge.SummarizeContentFilters(responsesRoot["content_filters"] as JsonArray));
     }
 
-    [Fact]
+    [TestMethod]
     public void ToChatCompletionResponse_ContentFilterWithoutFilters_SetsFinishReasonOnly()
     {
         JsonObject responsesRoot = new()
@@ -88,17 +89,17 @@ public class ChatResponsesBridgeContentFilterTests
             ["output"] = new JsonArray()
         };
 
-        Assert.False(ChatResponsesBridge.TryCreateErrorResponse(responsesRoot, out _));
+        Assert.IsFalse(ChatResponsesBridge.TryCreateErrorResponse(responsesRoot, out _));
 
         byte[] body = ChatResponsesBridge.ToChatCompletionResponse(responsesRoot);
         JsonObject choice = JsonNode.Parse(body)!["choices"]![0]!.AsObject();
 
-        Assert.Equal("content_filter", choice["finish_reason"]?.GetValue<string>());
-        Assert.Null(choice["content_filters"]);
-        Assert.Null(choice["content_filter_results"]);
+        Assert.AreEqual("content_filter", choice["finish_reason"]?.GetValue<string>());
+        Assert.IsNull(choice["content_filters"]);
+        Assert.IsNull(choice["content_filter_results"]);
     }
 
-    [Fact]
+    [TestMethod]
     public void ToChatCompletionResponse_MaxOutputTokens_SetsFinishReasonLength()
     {
         JsonObject responsesRoot = new()
@@ -126,14 +127,14 @@ public class ChatResponsesBridgeContentFilterTests
             }
         };
 
-        Assert.False(ChatResponsesBridge.TryCreateErrorResponse(responsesRoot, out _));
+        Assert.IsFalse(ChatResponsesBridge.TryCreateErrorResponse(responsesRoot, out _));
 
         byte[] body = ChatResponsesBridge.ToChatCompletionResponse(responsesRoot);
         JsonObject choice = JsonNode.Parse(body)!["choices"]![0]!.AsObject();
-        Assert.Equal("length", choice["finish_reason"]?.GetValue<string>());
+        Assert.AreEqual("length", choice["finish_reason"]?.GetValue<string>());
     }
 
-    [Fact]
+    [TestMethod]
     public async Task ToChatCompletionSseAsync_ContentFilter_EmitsFinishReasonNotError()
     {
         string sse =
@@ -155,17 +156,17 @@ public class ChatResponsesBridgeContentFilterTests
             frames.Add(frame);
         }
 
-        Assert.DoesNotContain(frames, f => f.Contains("\"error\"", StringComparison.Ordinal));
+        Assert.DoesNotContain(f => f.Contains("\"error\"", StringComparison.Ordinal), frames);
         string? final = frames.LastOrDefault(f =>
             f.Contains("\"finish_reason\"", StringComparison.Ordinal)
             && !f.Contains("\"finish_reason\":null", StringComparison.Ordinal));
-        Assert.NotNull(final);
+        Assert.IsNotNull(final);
         Assert.Contains("\"finish_reason\":\"content_filter\"", final, StringComparison.Ordinal);
         Assert.Contains("\"content_filters\"", final, StringComparison.Ordinal);
         Assert.Contains("\"content_filter_results\"", final, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [TestMethod]
     public async Task ToChatCompletionSseAsync_UnknownIncomplete_IncludesReasonInError()
     {
         string sse =
@@ -185,7 +186,7 @@ public class ChatResponsesBridgeContentFilterTests
         }
 
         string? errorFrame = frames.FirstOrDefault(f => f.Contains("\"error\"", StringComparison.Ordinal));
-        Assert.NotNull(errorFrame);
+        Assert.IsNotNull(errorFrame);
         Assert.Contains("content_filter_unknown", errorFrame, StringComparison.Ordinal);
     }
 }

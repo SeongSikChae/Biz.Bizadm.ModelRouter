@@ -9,43 +9,44 @@ using YamlDotNet.Core;
 
 namespace Biz.Bizadm.ModelRouter.Tests;
 
+[TestClass]
 public sealed class ProviderSupportTests
 {
-    [Fact]
+    [TestMethod]
     public void DeserializeConfiguration_ProviderDefaultsToAzureFoundry()
     {
         Configuration configuration = DeserializeConfiguration(CreateYaml());
 
-        Assert.Equal(Provider.AzureFoundry, configuration.Provider);
+        Assert.AreEqual(Provider.AzureFoundry, configuration.Provider);
     }
 
-    [Theory]
-    [InlineData("AzureFoundry", Provider.AzureFoundry)]
-    [InlineData("OpenAI", Provider.OpenAI)]
+    [TestMethod]
+    [DataRow("AzureFoundry", Provider.AzureFoundry)]
+    [DataRow("OpenAI", Provider.OpenAI)]
     public void DeserializeConfiguration_ParsesProvider(string provider, Provider expected)
     {
         Configuration configuration = DeserializeConfiguration(CreateYaml($"Provider: {provider}\n"));
 
-        Assert.Equal(expected, configuration.Provider);
+        Assert.AreEqual(expected, configuration.Provider);
     }
 
-    [Fact]
+    [TestMethod]
     public void DeserializeConfiguration_RejectsUnknownProvider()
     {
-        Assert.Throws<YamlException>(() => DeserializeConfiguration(CreateYaml("Provider: Unknown\n")));
+        Assert.ThrowsExactly<YamlException>(() => DeserializeConfiguration(CreateYaml("Provider: Unknown\n")));
     }
 
-    [Fact]
+    [TestMethod]
     public void Validate_RejectsUndefinedProviderValue()
     {
         Configuration configuration = new() { Provider = (Provider)99 };
 
-        Assert.Throws<ArgumentOutOfRangeException>(configuration.Validate);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(configuration.Validate);
     }
 
-    [Theory]
-    [InlineData(Provider.AzureFoundry, "https://foundry.example/openai", "test-key", null)]
-    [InlineData(Provider.OpenAI, "https://api.openai.com/v1", null, "Bearer test-key")]
+    [TestMethod]
+    [DataRow(Provider.AzureFoundry, "https://foundry.example/openai", "test-key", null)]
+    [DataRow(Provider.OpenAI, "https://api.openai.com/v1", null, "Bearer test-key")]
     public async Task ProviderAuthentication_IsUsedByAllForwardingPaths(
         Provider provider,
         string endpoint,
@@ -94,21 +95,24 @@ public sealed class ProviderSupportTests
             "application/json",
             CancellationToken.None));
 
-        Assert.Equal(5, requests.Count);
-        Assert.Equal(
+        Assert.AreEqual(5, requests.Count);
+        CollectionAssert.AreEqual(
             new[] { "chat/completions", "responses", "models", "models/model%20name", "responses" },
-            requests.Select(request => request.RequestUri!.AbsolutePath[(request.RequestUri.AbsolutePath.LastIndexOf("/v1/", StringComparison.Ordinal) + 4)..]));
+            requests.Select(request => request.RequestUri!.AbsolutePath[(request.RequestUri.AbsolutePath.LastIndexOf("/v1/", StringComparison.Ordinal) + 4)..]).ToArray());
 
         foreach (HttpRequestMessage request in requests)
         {
-            Assert.Equal(expectedApiKey, request.Headers.TryGetValues("api-key", out IEnumerable<string>? apiKey)
-                ? Assert.Single(apiKey)
+            Assert.AreEqual(expectedApiKey, request.Headers.TryGetValues("api-key", out IEnumerable<string>? apiKey)
+                ? Assert.ContainsSingle(apiKey)
                 : null);
-            Assert.Equal(expectedAuthorization, request.Headers.Authorization?.ToString());
+            Assert.AreEqual(expectedAuthorization, request.Headers.Authorization?.ToString());
         }
 
         if (provider == Provider.OpenAI)
-            Assert.All(requests, request => Assert.Equal("https://api.openai.com", request.RequestUri!.GetLeftPart(UriPartial.Authority)));
+        {
+            foreach (HttpRequestMessage request in requests)
+                Assert.AreEqual("https://api.openai.com", request.RequestUri!.GetLeftPart(UriPartial.Authority));
+        }
     }
 
     private static Configuration DeserializeConfiguration(string yaml)

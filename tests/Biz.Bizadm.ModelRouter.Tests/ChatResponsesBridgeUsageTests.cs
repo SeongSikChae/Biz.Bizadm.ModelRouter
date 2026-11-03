@@ -8,9 +8,10 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Biz.Bizadm.ModelRouter.Tests;
 
+[TestClass]
 public class ChatResponsesBridgeUsageTests
 {
-    [Fact]
+    [TestMethod]
     public void ToChatCompletionResponse_Usage_PreservesTokenDetailsAndInputTotal()
     {
         JsonObject responsesRoot = CreateResponseWithUsage(CreateUsage());
@@ -19,16 +20,16 @@ public class ChatResponsesBridgeUsageTests
         JsonObject chat = JsonNode.Parse(body)!.AsObject();
         JsonObject usage = chat["usage"]!.AsObject();
 
-        Assert.Equal(1_000, usage["prompt_tokens"]!.GetValue<int>());
-        Assert.Equal(100, usage["completion_tokens"]!.GetValue<int>());
-        Assert.Equal(1_100, usage["total_tokens"]!.GetValue<int>());
-        Assert.Equal(800, usage["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
-        Assert.Equal(12, usage["prompt_tokens_details"]!["cache_write_tokens"]!.GetValue<int>());
-        Assert.Equal("preserved", usage["prompt_tokens_details"]!["provider_extension"]!.GetValue<string>());
-        Assert.Equal(25, usage["completion_tokens_details"]!["reasoning_tokens"]!.GetValue<int>());
+        Assert.AreEqual(1_000, usage["prompt_tokens"]!.GetValue<int>());
+        Assert.AreEqual(100, usage["completion_tokens"]!.GetValue<int>());
+        Assert.AreEqual(1_100, usage["total_tokens"]!.GetValue<int>());
+        Assert.AreEqual(800, usage["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
+        Assert.AreEqual(12, usage["prompt_tokens_details"]!["cache_write_tokens"]!.GetValue<int>());
+        Assert.AreEqual("preserved", usage["prompt_tokens_details"]!["provider_extension"]!.GetValue<string>());
+        Assert.AreEqual(25, usage["completion_tokens_details"]!["reasoning_tokens"]!.GetValue<int>());
     }
 
-    [Fact]
+    [TestMethod]
     public void ToChatCompletionResponse_Usage_PreservesZeroCachedTokens()
     {
         JsonObject responsesRoot = CreateResponseWithUsage(new JsonObject
@@ -42,10 +43,10 @@ public class ChatResponsesBridgeUsageTests
         byte[] body = ChatResponsesBridge.ToChatCompletionResponse(responsesRoot);
         JsonObject usage = JsonNode.Parse(body)!["usage"]!.AsObject();
 
-        Assert.Equal(0, usage["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
+        Assert.AreEqual(0, usage["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
     }
 
-    [Fact]
+    [TestMethod]
     public void ToChatCompletionResponse_Usage_DoesNotInventMissingDetailsAndFallsBackToTotal()
     {
         JsonObject responsesRoot = CreateResponseWithUsage(new JsonObject
@@ -60,14 +61,14 @@ public class ChatResponsesBridgeUsageTests
         byte[] body = ChatResponsesBridge.ToChatCompletionResponse(responsesRoot);
         JsonObject usage = JsonNode.Parse(body)!["usage"]!.AsObject();
 
-        Assert.Equal(4, usage["prompt_tokens"]!.GetValue<int>());
-        Assert.Equal(2, usage["completion_tokens"]!.GetValue<int>());
-        Assert.Equal(6, usage["total_tokens"]!.GetValue<int>());
-        Assert.Null(usage["prompt_tokens_details"]);
-        Assert.Null(usage["completion_tokens_details"]);
+        Assert.AreEqual(4, usage["prompt_tokens"]!.GetValue<int>());
+        Assert.AreEqual(2, usage["completion_tokens"]!.GetValue<int>());
+        Assert.AreEqual(6, usage["total_tokens"]!.GetValue<int>());
+        Assert.IsNull(usage["prompt_tokens_details"]);
+        Assert.IsNull(usage["completion_tokens_details"]);
     }
 
-    [Fact]
+    [TestMethod]
     public async Task ToChatCompletionSseAsync_CompletedResponse_PreservesUsageInFinalChunk()
     {
         string sse = $"data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"resp_usage\",\"model\":\"m\",\"status\":\"completed\",\"usage\":{CreateUsage().ToJsonString()},\"output\":[]}}}}\n\n";
@@ -77,64 +78,64 @@ public class ChatResponsesBridgeUsageTests
         int finishIndex = frames.FindIndex(frame => frame.Contains("\"finish_reason\":\"stop\"", StringComparison.Ordinal));
         int usageIndex = frames.FindIndex(frame => frame.Contains("\"choices\":[]", StringComparison.Ordinal));
         int doneIndex = frames.FindIndex(frame => frame.Contains("[DONE]", StringComparison.Ordinal));
-        Assert.True(finishIndex >= 0);
-        Assert.True(usageIndex > finishIndex);
-        Assert.True(doneIndex > usageIndex);
+        Assert.IsTrue(finishIndex >= 0);
+        Assert.IsTrue(usageIndex > finishIndex);
+        Assert.IsTrue(doneIndex > usageIndex);
 
         JsonObject usageChunk = ParseFrame(frames[usageIndex]);
         JsonObject usage = usageChunk["usage"]!.AsObject();
-        Assert.Equal(1_000, usage["prompt_tokens"]!.GetValue<int>());
-        Assert.Equal(800, usage["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
-        Assert.Equal(25, usage["completion_tokens_details"]!["reasoning_tokens"]!.GetValue<int>());
+        Assert.AreEqual(1_000, usage["prompt_tokens"]!.GetValue<int>());
+        Assert.AreEqual(800, usage["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
+        Assert.AreEqual(25, usage["completion_tokens_details"]!["reasoning_tokens"]!.GetValue<int>());
     }
 
-    [Fact]
+    [TestMethod]
     public async Task ToChatCompletionSseAsync_MappedIncomplete_PreservesTopLevelUsageFallback()
     {
         string sse = $"data: {{\"type\":\"response.incomplete\",\"incomplete_details\":{{\"reason\":\"max_output_tokens\"}},\"usage\":{CreateUsage().ToJsonString()}}}\n\n";
 
         List<string> frames = await ReadFramesAsync(sse, includeUsage: true);
 
-        Assert.Contains(frames, frame => frame.Contains("\"finish_reason\":\"length\"", StringComparison.Ordinal));
-        JsonObject usageChunk = ParseFrame(Assert.Single(frames, frame => frame.Contains("\"choices\":[]", StringComparison.Ordinal)));
-        Assert.Equal(800, usageChunk["usage"]!["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
+        Assert.Contains(frame => frame.Contains("\"finish_reason\":\"length\"", StringComparison.Ordinal), frames);
+        JsonObject usageChunk = ParseFrame(Assert.ContainsSingle(frame => frame.Contains("\"choices\":[]", StringComparison.Ordinal), frames));
+        Assert.AreEqual(800, usageChunk["usage"]!["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
     }
 
-    [Fact]
+    [TestMethod]
     public async Task ToChatCompletionSseAsync_CompletedResponseWithoutUsage_DoesNotEmitUsageChunk()
     {
         const string sse = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_no_usage\",\"model\":\"m\",\"status\":\"completed\",\"output\":[]}}\n\n";
 
         List<string> frames = await ReadFramesAsync(sse, includeUsage: true);
 
-        Assert.DoesNotContain(frames, frame => frame.Contains("\"choices\":[]", StringComparison.Ordinal));
-        Assert.DoesNotContain(frames, frame => frame.Contains("\"usage\":", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame => frame.Contains("\"choices\":[]", StringComparison.Ordinal), frames);
+        Assert.DoesNotContain(frame => frame.Contains("\"usage\":", StringComparison.Ordinal), frames);
     }
 
-    [Fact]
+    [TestMethod]
     public async Task ToChatCompletionSseAsync_FailedIncomplete_DoesNotEmitSuccessUsage()
     {
         string sse = $"data: {{\"type\":\"response.incomplete\",\"response\":{{\"id\":\"resp_failed\",\"model\":\"m\",\"status\":\"incomplete\",\"incomplete_details\":{{\"reason\":\"unknown_reason\"}},\"usage\":{CreateUsage().ToJsonString()}}}}}\n\n";
 
         List<string> frames = await ReadFramesAsync(sse, includeUsage: true);
 
-        Assert.Contains(frames, frame => frame.Contains("\"error\":", StringComparison.Ordinal));
-        Assert.DoesNotContain(frames, frame => frame.Contains("\"choices\":[]", StringComparison.Ordinal));
-        Assert.DoesNotContain(frames, frame => frame.Contains("\"usage\":", StringComparison.Ordinal));
+        Assert.Contains(frame => frame.Contains("\"error\":", StringComparison.Ordinal), frames);
+        Assert.DoesNotContain(frame => frame.Contains("\"choices\":[]", StringComparison.Ordinal), frames);
+        Assert.DoesNotContain(frame => frame.Contains("\"usage\":", StringComparison.Ordinal), frames);
     }
 
-    [Fact]
+    [TestMethod]
     public async Task ToChatCompletionSseAsync_IncludeUsageFalse_DoesNotEmitUsageChunk()
     {
         string sse = $"data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"resp_no_usage\",\"model\":\"m\",\"status\":\"completed\",\"usage\":{CreateUsage().ToJsonString()},\"output\":[]}}}}\n\n";
 
         List<string> frames = await ReadFramesAsync(sse, includeUsage: false);
 
-        Assert.DoesNotContain(frames, frame => frame.Contains("\"choices\":[]", StringComparison.Ordinal));
-        Assert.DoesNotContain(frames, frame => frame.Contains("\"usage\":", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame => frame.Contains("\"choices\":[]", StringComparison.Ordinal), frames);
+        Assert.DoesNotContain(frame => frame.Contains("\"usage\":", StringComparison.Ordinal), frames);
     }
 
-    [Fact]
+    [TestMethod]
     public async Task ChatCompletionsToolCallIdRewrite_PreservesUsageDetailsInResponseAndSse()
     {
         const string clientCallId = "call_client";
@@ -158,7 +159,7 @@ public class ChatResponsesBridgeUsageTests
                 }
             }
         };
-        Assert.True(mapper.RewriteChatCompletionsRequest(request));
+        Assert.IsTrue(mapper.RewriteChatCompletionsRequest(request));
         string providerCallId = request["messages"]![0]!["tool_calls"]![0]!["id"]!.GetValue<string>();
 
         JsonObject responseBody = new()
@@ -190,9 +191,9 @@ public class ChatResponsesBridgeUsageTests
             CancellationToken.None);
 
         JsonObject rewritten = JsonNode.Parse(await response.Content.ReadAsStringAsync())!.AsObject();
-        Assert.Equal(clientCallId, rewritten["choices"]![0]!["message"]!["tool_calls"]![0]!["id"]!.GetValue<string>());
-        Assert.Equal(800, rewritten["usage"]!["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
-        Assert.Equal(25, rewritten["usage"]!["completion_tokens_details"]!["reasoning_tokens"]!.GetValue<int>());
+        Assert.AreEqual(clientCallId, rewritten["choices"]![0]!["message"]!["tool_calls"]![0]!["id"]!.GetValue<string>());
+        Assert.AreEqual(800, rewritten["usage"]!["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
+        Assert.AreEqual(25, rewritten["usage"]!["completion_tokens_details"]!["reasoning_tokens"]!.GetValue<int>());
 
         JsonObject streamChunk = new()
         {
@@ -215,26 +216,26 @@ public class ChatResponsesBridgeUsageTests
             streamChunk.ToJsonString(),
             mapper,
             isChatCompletions: true);
-        Assert.NotNull(rewrittenSsePayload);
+        Assert.IsNotNull(rewrittenSsePayload);
         JsonObject rewrittenChunk = JsonNode.Parse(rewrittenSsePayload)!.AsObject();
-        Assert.Equal(clientCallId, rewrittenChunk["choices"]![0]!["delta"]!["tool_calls"]![0]!["id"]!.GetValue<string>());
-        Assert.Equal(800, rewrittenChunk["usage"]!["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
+        Assert.AreEqual(clientCallId, rewrittenChunk["choices"]![0]!["delta"]!["tool_calls"]![0]!["id"]!.GetValue<string>());
+        Assert.AreEqual(800, rewrittenChunk["usage"]!["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
     }
 
-    [Theory]
-    [InlineData("https://foundry.example/openai", "https://foundry.example/openai")]
-    [InlineData("https://foundry.example/openai/", "https://foundry.example/openai")]
-    [InlineData("https://foundry.example/openai/v1", "https://foundry.example/openai")]
-    [InlineData("https://foundry.example/openai/v1/", "https://foundry.example/openai")]
-    [InlineData("https://foundry.example/openai/v1/chat/completions", "https://foundry.example/openai")]
-    [InlineData("https://api.openai.com", "https://api.openai.com")]
-    [InlineData("https://api.openai.com/v1", "https://api.openai.com")]
+    [TestMethod]
+    [DataRow("https://foundry.example/openai", "https://foundry.example/openai")]
+    [DataRow("https://foundry.example/openai/", "https://foundry.example/openai")]
+    [DataRow("https://foundry.example/openai/v1", "https://foundry.example/openai")]
+    [DataRow("https://foundry.example/openai/v1/", "https://foundry.example/openai")]
+    [DataRow("https://foundry.example/openai/v1/chat/completions", "https://foundry.example/openai")]
+    [DataRow("https://api.openai.com", "https://api.openai.com")]
+    [DataRow("https://api.openai.com/v1", "https://api.openai.com")]
     public void NormalizeOpenAIEndpoint_StripsFromV1(string input, string expected)
     {
-        Assert.Equal(expected, AzureFoundryChatClient.NormalizeOpenAIEndpoint(input));
+        Assert.AreEqual(expected, AzureFoundryChatClient.NormalizeOpenAIEndpoint(input));
     }
 
-    [Fact]
+    [TestMethod]
     public async Task DirectChatAndResponsesForwarding_PreserveProviderUsagePayloads()
     {
         JsonObject chatUsage = CreateChatUsage();
@@ -263,17 +264,17 @@ public class ChatResponsesBridgeUsageTests
             "application/json",
             CancellationToken.None);
         JsonObject chatBody = JsonNode.Parse(await chatResponse.Content.ReadAsStringAsync())!.AsObject();
-        Assert.Equal(800, chatBody["usage"]!["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
+        Assert.AreEqual(800, chatBody["usage"]!["prompt_tokens_details"]!["cached_tokens"]!.GetValue<int>());
 
         using HttpResponseMessage responsesResponse = await client.ForwardResponsesAsync(
             new MemoryStream(Encoding.UTF8.GetBytes("{\"model\":\"m\",\"input\":\"hello\"}")),
             "application/json",
             CancellationToken.None);
         JsonObject responsesBody = JsonNode.Parse(await responsesResponse.Content.ReadAsStringAsync())!.AsObject();
-        Assert.Equal(800, responsesBody["usage"]!["input_tokens_details"]!["cached_tokens"]!.GetValue<int>());
+        Assert.AreEqual(800, responsesBody["usage"]!["input_tokens_details"]!["cached_tokens"]!.GetValue<int>());
     }
 
-    [Fact]
+    [TestMethod]
     public async Task ResponseToolCallIdRewrite_PreservesUsageDetails()
     {
         const string clientCallId = "call_client";
@@ -290,7 +291,7 @@ public class ChatResponsesBridgeUsageTests
                 }
             }
         };
-        Assert.True(mapper.RewriteResponsesRequest(request));
+        Assert.IsTrue(mapper.RewriteResponsesRequest(request));
         string providerCallId = request["input"]![0]!["call_id"]!.GetValue<string>();
 
         JsonObject originalUsage = CreateUsage();
@@ -314,9 +315,9 @@ public class ChatResponsesBridgeUsageTests
             CancellationToken.None);
 
         JsonObject rewritten = JsonNode.Parse(await response.Content.ReadAsStringAsync())!.AsObject();
-        Assert.Equal(clientCallId, rewritten["output"]![0]!["call_id"]!.GetValue<string>());
-        Assert.Equal(800, rewritten["usage"]!["input_tokens_details"]!["cached_tokens"]!.GetValue<int>());
-        Assert.Equal(25, rewritten["usage"]!["output_tokens_details"]!["reasoning_tokens"]!.GetValue<int>());
+        Assert.AreEqual(clientCallId, rewritten["output"]![0]!["call_id"]!.GetValue<string>());
+        Assert.AreEqual(800, rewritten["usage"]!["input_tokens_details"]!["cached_tokens"]!.GetValue<int>());
+        Assert.AreEqual(25, rewritten["usage"]!["output_tokens_details"]!["reasoning_tokens"]!.GetValue<int>());
     }
 
     private sealed class StaticResponseHandler(Func<HttpRequestMessage, HttpResponseMessage> createResponse)
