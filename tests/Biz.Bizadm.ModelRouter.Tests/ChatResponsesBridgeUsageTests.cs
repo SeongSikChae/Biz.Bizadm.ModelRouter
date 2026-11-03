@@ -254,8 +254,11 @@ public class ChatResponsesBridgeUsageTests
             httpClient,
             new Biz.Bizadm.ModelRouter.Server.Configuration
             {
-                OpenAIEndpoint = "https://foundry.example/openai",
-                OpenAIKey = "test-key"
+                OpenAI = new()
+                {
+                    OpenAIEndpoint = "https://foundry.example/openai",
+                    OpenAIKey = "test-key"
+                }
             },
             NullLogger<AzureFoundryChatClient>.Instance);
 

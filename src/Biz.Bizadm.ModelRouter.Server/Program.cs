@@ -1,4 +1,6 @@
 
+using Biz.Bizadm.KMS.Cipher;
+using Biz.Bizadm.KMS.Credentials.Cipher;
 using Biz.Bizadm.ModelRouter.Server.Middleware;
 using Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry;
 using CommandLine;
@@ -7,13 +9,19 @@ using Serilog;
 using Serilog.Configuration;
 using System.Configuration;
 using System.Net.Security;
+using System.Security.AccessControl;
 using System.Security.Authentication;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using YamlDotNet.Serialization;
 
 namespace Biz.Bizadm.ModelRouter.Server
 {
     public class Program
     {
+        private const string KMS_KEK_SERVICE = "biz-bizadm-modelrouter-server://kek";
+        private const string KMS_KEK_ACCOUNT = "default";
+
         public sealed class CmdMain
         {
             [Option("config", Required = true, HelpText = "config file path")]
@@ -33,9 +41,93 @@ namespace Biz.Bizadm.ModelRouter.Server
                     string str = File.ReadAllText(configFileInfo.FullName);
                     Configuration? configuration = deserializer.Deserialize<Configuration>(str);
                     ConfigurationValidator.Validate(configuration);
+                    ProtectSecrets(configFileInfo, configuration);
                     WebApplication app = CreateWebApplication(args, cmdMain, configuration);
                     await StartAsync(app, cmdMain, configuration);
                 });
+        }
+
+        private static void ProtectSecrets(FileInfo configFileInfo, Configuration configuration)
+        {
+            bool rewrite = false;
+
+            if (!string.IsNullOrWhiteSpace(configuration.Kms.CredentialStore))
+                Environment.SetEnvironmentVariable("GCM_CREDENTIAL_STORE", configuration.Kms.CredentialStore);
+
+            FileInfo dekFileInfo = new FileInfo(Path.Combine(configuration.ContentRootPath, configuration.Kms.DekFilePath));
+
+            IOsKekCredentialStore credentialStore = OsKekCredentialProvider.CreateForCurrentOs(KMS_KEK_SERVICE, KMS_KEK_ACCOUNT);
+            try
+            {
+                CryptographicOperations.ZeroMemory(credentialStore.GetPassword());
+            }
+            catch (InvalidOperationException e) when (e.Message.StartsWith("KEK credential not found", StringComparison.Ordinal))
+            {
+                if (dekFileInfo.Exists)
+                    throw new InvalidOperationException($"KEK credential not found but DEK file exists: {dekFileInfo.FullName}", e);
+
+                byte[] password = RandomNumberGenerator.GetBytes(32);
+                credentialStore.StorePassword(password);
+                CryptographicOperations.ZeroMemory(password);
+            }
+
+            if (string.IsNullOrWhiteSpace(configuration.Kms.KekSalt))
+            {
+                configuration.Kms.KekSalt = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
+                WriteConfiguration(configFileInfo, configuration);
+            }
+
+            using AesGcmKekManager kekManager = AesGcmKekManager.Create(credentialStore, Convert.FromBase64String(configuration.Kms.KekSalt), configuration.Kms.KekIterations!.Value);
+            using AesGcmDekCipher dekCipher = AesGcmDekCipher.Create(kekManager.Current, dekFileInfo);
+            using DekCipherService dekCipherService = new DekCipherService(dekCipher, leaveOpen: true);
+
+            string EncryptIfNeeded(string value)
+            {
+                if (dekCipherService.StartsWithFromPrefix(value))
+                    return value;
+                rewrite = true;
+                return dekCipherService.Encrypt(value);
+            }
+
+            Configuration.SslConfiguration? ssl = configuration.Ssl;
+            bool hasCertificatePassword = ssl?.ServerCertificatePassword is not null;
+
+            if (hasCertificatePassword)
+                ssl!.ServerCertificatePassword = EncryptIfNeeded(ssl.ServerCertificatePassword);
+            configuration.OpenAI.OpenAIKey = EncryptIfNeeded(configuration.OpenAI.OpenAIKey);
+
+            if (rewrite)
+                WriteConfiguration(configFileInfo, configuration);
+
+            if (hasCertificatePassword)
+                ssl!.ServerCertificatePassword = dekCipherService.Decrypt(ssl.ServerCertificatePassword);
+            configuration.OpenAI.OpenAIKey = dekCipherService.Decrypt(configuration.OpenAI.OpenAIKey);
+        }
+
+        private static void WriteConfiguration(FileInfo configFileInfo, Configuration configuration)
+        {
+            ISerializer serializer = new SerializerBuilder()
+                .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull)
+                .Build();
+            string tempFilePath = configFileInfo.FullName + ".tmp";
+            try
+            {
+                File.WriteAllText(tempFilePath, serializer.Serialize(configuration));
+                if (OperatingSystem.IsWindows())
+                {
+                    FileSecurity security = new FileSecurity();
+                    security.SetSecurityDescriptorBinaryForm(configFileInfo.GetAccessControl().GetSecurityDescriptorBinaryForm(), AccessControlSections.Access);
+                    new FileInfo(tempFilePath).SetAccessControl(security);
+                }
+                else
+                    File.SetUnixFileMode(tempFilePath, File.GetUnixFileMode(configFileInfo.FullName));
+                File.Move(tempFilePath, configFileInfo.FullName, overwrite: true);
+            }
+            catch
+            {
+                File.Delete(tempFilePath);
+                throw;
+            }
         }
 
         private static WebApplication CreateWebApplication(string[] args, CmdMain cmdMain, Configuration configuration)
@@ -73,22 +165,23 @@ namespace Biz.Bizadm.ModelRouter.Server
                 options.ListenAnyIP(configuration.Port!.Value, configure =>
                 {
                     configure.Protocols = HttpProtocols.Http1AndHttp2AndHttp3;
-                    if (configuration.UseSsl!.Value)
+                    Configuration.SslConfiguration? ssl = configuration.Ssl;
+                    if (ssl?.UseSsl == true)
                     {
                         X509Certificate2 certificate = X509CertificateLoader.LoadPkcs12FromFile(
-                            new FileInfo(Path.Combine(configuration.ContentRootPath, configuration.ServerCertificate)).FullName,
-                            configuration.ServerCertificatePassword
+                            new FileInfo(Path.Combine(configuration.ContentRootPath, ssl.ServerCertificate)).FullName,
+                            ssl.ServerCertificatePassword
                         );
 
                         configure.UseHttps(httpsOptions =>
                         {
                             httpsOptions.ServerCertificate = certificate;
 
-                            if (configuration.CertificateChain is not null)
+                            if (ssl.CertificateChain is not null)
                             {
                                 X509Certificate2Collection collection = X509CertificateLoader.LoadPkcs12CollectionFromFile(
-                                    new FileInfo(Path.Combine(configuration.ContentRootPath, configuration.ServerCertificate)).FullName,
-                                    configuration.ServerCertificatePassword
+                                    new FileInfo(Path.Combine(configuration.ContentRootPath, ssl.ServerCertificate)).FullName,
+                                    ssl.ServerCertificatePassword
                                 );
 
                                 Dictionary<string, X509Certificate2> certificates = new Dictionary<string, X509Certificate2>();
@@ -99,7 +192,7 @@ namespace Biz.Bizadm.ModelRouter.Server
                                 }
 
                                 string[] certificateChain =
-                                    configuration.CertificateChain.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                                    ssl.CertificateChain.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
 
                                 httpsOptions.ServerCertificateChain = new X509Certificate2Collection();
 
@@ -111,10 +204,10 @@ namespace Biz.Bizadm.ModelRouter.Server
                             }
 
                             httpsOptions.SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
-                            if (configuration.IncludeCipherSuites is not null)
+                            if (ssl.IncludeCipherSuites is not null)
                             {
                                 string[] includeCipherSuites =
-                                configuration.IncludeCipherSuites.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                                ssl.IncludeCipherSuites.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
 
                                 if (includeCipherSuites.Length > 0)
                                 {
@@ -163,17 +256,17 @@ namespace Biz.Bizadm.ModelRouter.Server
 
         internal static void ConfigureProviderAuthentication(HttpClient httpClient, Configuration configuration)
         {
-            switch (configuration.Provider)
+            switch (configuration.OpenAI.Provider)
             {
                 case Provider.AzureFoundry:
-                    httpClient.DefaultRequestHeaders.Add("api-key", configuration.OpenAIKey);
+                    httpClient.DefaultRequestHeaders.Add("api-key", configuration.OpenAI.OpenAIKey);
                     break;
                 case Provider.OpenAI:
                     httpClient.DefaultRequestHeaders.Authorization =
-                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", configuration.OpenAIKey);
+                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", configuration.OpenAI.OpenAIKey);
                     break;
                 default:
-                    throw new ArgumentOutOfRangeException(nameof(configuration.Provider), configuration.Provider, "Unsupported provider.");
+                    throw new ArgumentOutOfRangeException(nameof(configuration.OpenAI.Provider), configuration.OpenAI.Provider, "Unsupported provider.");
             }
         }
 

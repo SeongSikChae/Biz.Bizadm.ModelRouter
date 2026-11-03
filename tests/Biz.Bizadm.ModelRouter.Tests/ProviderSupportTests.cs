@@ -17,7 +17,7 @@ public sealed class ProviderSupportTests
     {
         Configuration configuration = DeserializeConfiguration(CreateYaml());
 
-        Assert.AreEqual(Provider.AzureFoundry, configuration.Provider);
+        Assert.AreEqual(Provider.AzureFoundry, configuration.OpenAI.Provider);
     }
 
     [TestMethod]
@@ -27,7 +27,7 @@ public sealed class ProviderSupportTests
     {
         Configuration configuration = DeserializeConfiguration(CreateYaml($"Provider: {provider}\n"));
 
-        Assert.AreEqual(expected, configuration.Provider);
+        Assert.AreEqual(expected, configuration.OpenAI.Provider);
     }
 
     [TestMethod]
@@ -39,7 +39,7 @@ public sealed class ProviderSupportTests
     [TestMethod]
     public void Validate_RejectsUndefinedProviderValue()
     {
-        Configuration configuration = new() { Provider = (Provider)99 };
+        Configuration.OpenAIConfiguration configuration = new() { Provider = (Provider)99 };
 
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(configuration.Validate);
     }
@@ -65,9 +65,12 @@ public sealed class ProviderSupportTests
 
         Configuration configuration = new()
         {
-            Provider = provider,
-            OpenAIEndpoint = endpoint,
-            OpenAIKey = "test-key",
+            OpenAI = new()
+            {
+                Provider = provider,
+                OpenAIEndpoint = endpoint,
+                OpenAIKey = "test-key"
+            },
             ReasoningByModel = new Dictionary<string, ModelReasoningOptions>
             {
                 ["m"] = new()
@@ -123,7 +126,7 @@ public sealed class ProviderSupportTests
     }
 
     private static string CreateYaml(string provider = "") =>
-        $"{provider}ContentRootPath: /tmp\nPort: 80\nOpenAIEndpoint: https://api.openai.com\nOpenAIKey: test-key\n";
+        $"ContentRootPath: /tmp\nPort: 80\nOpenAI:\n{(provider.Length > 0 ? "  " + provider : "")}  OpenAIEndpoint: https://api.openai.com\n  OpenAIKey: test-key\nKms:\n  DekFilePath: dek.bin\n";
 
     private static MemoryStream JsonBody(string json) => new(Encoding.UTF8.GetBytes(json));
 

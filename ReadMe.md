@@ -20,7 +20,8 @@ Azure AI Foundry 또는 OpenAI API를 프록시하는 ASP.NET Core 서버입니�
   - `/v1/responses`에는 `Effort`를 `reasoning.effort`로 주입
   - 하위 호환: `ReasoningEffortByModel` 문자열 맵은 tools 시 `BridgeToResponses`로 취급
 - 콘솔 및 날짜별 파일 로그 기록 (`X-Request-Id` 응답 헤더 포함)
-- 선택적 HTTPS (`UseSsl`), TLS 1.2/1.3, HTTP/1·2·3
+- 선택적 HTTPS (`Ssl.UseSsl`), TLS 1.2/1.3, HTTP/1·2·3
+- 설정 보안정보(`Ssl.ServerCertificatePassword`, `OpenAI.OpenAIKey`) 기동 시 암호화 저장 (`Biz.Bizadm.KMS`, OS 자격 증명 금고 KEK)
 - Windows Service 및 systemd 호스팅 지원
 
 ## API
@@ -39,7 +40,8 @@ Azure AI Foundry 또는 OpenAI API를 프록시하는 ASP.NET Core 서버입니�
 - .NET 10.0.13 이상 SDK 또는 ASP.NET Core 런타임
 - Azure AI Foundry 또는 OpenAI API 엔드포인트 및 API 키
 - 서버 설정 YAML 파일
-- `UseSsl: true`인 경우 PKCS#12/PFX 인증서 파일
+- `Ssl.UseSsl: true`인 경우 PKCS#12/PFX 인증서 파일
+- OS 자격 증명 금고 (Windows Credential Manager, macOS Keychain, Linux Secret Service 또는 `Kms.CredentialStore`로 지정한 GCM 저장소)
 
 ### 보안 업데이트
 
@@ -52,19 +54,28 @@ Azure AI Foundry 또는 OpenAI API를 프록시하는 ASP.NET Core 서버입니�
 ```yaml
 ContentRootPath: /ModelRouter
 Port: 80
-# UseSsl: false
-# ServerCertificate: server.pfx
-# ServerCertificatePassword: replace-with-certificate-password
-# CertificateChain: ""
-# IncludeCipherSuites: "TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
-Provider: AzureFoundry # 생략 시 AzureFoundry; OpenAI 사용 시 OpenAI로 변경
-OpenAIEndpoint: https://YOUR-RESOURCE.services.ai.azure.com/openai
-OpenAIKey: replace-with-provider-api-key
+# Ssl:
+#   UseSsl: true
+#   ServerCertificate: server.pfx
+#   ServerCertificatePassword: replace-with-certificate-password
+#   CertificateChain: ""
+#   IncludeCipherSuites: "TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
+OpenAI:
+  Provider: AzureFoundry # 생략 시 AzureFoundry; OpenAI 사용 시 OpenAI로 변경
+  OpenAIEndpoint: https://YOUR-RESOURCE.services.ai.azure.com/openai
+  OpenAIKey: replace-with-provider-api-key
 
 # OpenAI 사용 예시:
-# Provider: OpenAI
-# OpenAIEndpoint: https://api.openai.com
-# OpenAIKey: replace-with-openai-api-key
+# OpenAI:
+#   Provider: OpenAI
+#   OpenAIEndpoint: https://api.openai.com
+#   OpenAIKey: replace-with-openai-api-key
+
+Kms:
+  DekFilePath: dek.bin
+  # KekSalt: ""
+  # KekIterations: 600000
+  # CredentialStore: gpg
 
 ReasoningByModel:
   YOUR-MODEL:
@@ -75,20 +86,36 @@ ReasoningByModel:
 
 | 항목 | 필수 | 설명 |
 | --- | --- | --- |
-| `ContentRootPath` | 예 | 콘텐츠 루트. 인증서 등 상대 경로의 기준 |
+| `ContentRootPath` | 예 | 콘텐츠 루트. 인증서·DEK 파일 등 상대 경로의 기준 |
 | `Port` | 예 | 수신 포트. `0.0.0.0:{Port}`에서 listen |
-| `UseSsl` | 아니오 | HTTPS 사용 여부. 기본값 `false` |
-| `ServerCertificate` | `UseSsl`일 때 | PKCS#12/PFX 경로 (`ContentRootPath` 기준 상대 또는 절대) |
-| `ServerCertificatePassword` | `UseSsl`일 때 | 인증서 암호 |
-| `CertificateChain` | 아니오 | 체인에 포함할 인증서 SimpleName (쉼표 구분) |
-| `IncludeCipherSuites` | 아니오 | 허용 TLS 암호 스위트 (`TlsCipherSuite` enum 이름, 쉼표 구분) |
-| `Provider` | 아니오 | `AzureFoundry` 또는 `OpenAI`. 생략 시 `AzureFoundry` |
-| `OpenAIEndpoint` | 예 | 선택한 공급자의 OpenAI 호환 API 기본 URL. Azure Foundry는 `.../openai`, OpenAI는 `https://api.openai.com` |
-| `OpenAIKey` | 예 | 선택한 공급자의 API 키. Azure Foundry는 `api-key`, OpenAI는 `Authorization: Bearer`로 전달 |
+| `Ssl` | 아니오 | HTTPS 설정 섹션. 생략 시 HTTP |
+| `Ssl.UseSsl` | 아니오 | HTTPS 사용 여부. 기본값 `false` |
+| `Ssl.ServerCertificate` | `UseSsl`일 때 | PKCS#12/PFX 경로 (`ContentRootPath` 기준 상대 또는 절대) |
+| `Ssl.ServerCertificatePassword` | `UseSsl`일 때 | 인증서 암호. 기동 시 암호화되어 저장 |
+| `Ssl.CertificateChain` | 아니오 | 체인에 포함할 인증서 SimpleName (쉼표 구분) |
+| `Ssl.IncludeCipherSuites` | 아니오 | 허용 TLS 암호 스위트 (`TlsCipherSuite` enum 이름, 쉼표 구분) |
+| `OpenAI` | 예 | 공급자 설정 섹션 |
+| `OpenAI.Provider` | 아니오 | `AzureFoundry` 또는 `OpenAI`. 생략 시 `AzureFoundry` |
+| `OpenAI.OpenAIEndpoint` | 예 | 선택한 공급자의 OpenAI 호환 API 기본 URL. Azure Foundry는 `.../openai`, OpenAI는 `https://api.openai.com` |
+| `OpenAI.OpenAIKey` | 예 | 선택한 공급자의 API 키. Azure Foundry는 `api-key`, OpenAI는 `Authorization: Bearer`로 전달. 기동 시 암호화되어 저장 |
+| `Kms` | 예 | 보안정보 암호화 설정 섹션 |
+| `Kms.DekFilePath` | 예 | KEK로 wrap된 DEK 파일 경로 (`ContentRootPath` 기준). 없으면 생성 |
+| `Kms.KekSalt` | 아니오 | KEK PBKDF2 salt (Base64). 생략 시 생성되어 저장 |
+| `Kms.KekIterations` | 아니오 | KEK PBKDF2 반복 횟수. 기본값 `600000` |
+| `Kms.CredentialStore` | 아니오 | `GCM_CREDENTIAL_STORE` 값 (예: Linux 헤드리스의 `gpg`) |
 | `ReasoningByModel` | 아니오 | 모델별 Effort / ChatToolsMode / SupportsNone |
 | `ReasoningEffortByModel` | 아니오 | 하위 호환 effort 문자열 맵 (tools 시 BridgeToResponses) |
 
-`OpenAIEndpoint`는 `/v1` 이전까지만 지정합니다. `/v1` 이후가 포함되어 있으면 서버가 자동으로 제거한 뒤 `/v1/chat/completions`, `/v1/responses`, `/v1/models` 경로를 추가합니다. `Provider`를 생략한 기존 설정은 `AzureFoundry`로 처리됩니다.
+`OpenAI.OpenAIEndpoint`는 `/v1` 이전까지만 지정합니다. `/v1` 이후가 포함되어 있으면 서버가 자동으로 제거한 뒤 `/v1/chat/completions`, `/v1/responses`, `/v1/models` 경로를 추가합니다. `OpenAI.Provider`를 생략하면 `AzureFoundry`로 처리됩니다.
+
+### 보안정보 암호화
+
+기동 시 `Ssl.ServerCertificatePassword`(값이 있을 때)와 `OpenAI.OpenAIKey`가 평문이면 DEK로 암호화해 `DEKENC:...` 형식으로 설정 파일을 다시 저장하고, 이미 암호문이면 파일을 바꾸지 않고 복호화만 해서 사용합니다.
+
+- KEK 패스워드는 OS 자격 증명 금고의 `biz-bizadm-modelrouter-server://kek` / `default` 엔트리에 보관합니다. 엔트리가 없고 DEK 파일도 없으면 32바이트 랜덤 값으로 생성합니다.
+- 엔트리 없이 DEK 파일만 있으면 복호화할 수 없으므로 기동에 실패합니다. 서버를 옮길 때는 금고 엔트리, DEK 파일, `Kms.KekSalt`를 함께 옮기거나 보안정보를 평문으로 다시 넣고 DEK 파일을 지운 뒤 기동하세요.
+- 설정 파일을 다시 저장할 때 YAML이 재직렬화되어 주석은 제거됩니다. 파일 권한(ACL/Unix mode)은 유지됩니다.
+- 이전 형식(루트의 `UseSsl`, `Provider`, `OpenAIEndpoint`, `OpenAIKey`)은 지원하지 않으므로 `Ssl`, `OpenAI`, `Kms` 섹션으로 옮겨야 합니다.
 
 ### 모델별 reasoning / tools
 
@@ -142,7 +169,7 @@ Cursor `Show Context Usage` 표시는 전달된 토큰 `usage` 외에도 Cursor�
 
 모델명은 대소문자를 구분하지 않습니다. `SupportsNone: false`인데 Effort가 `none`이면 허용된 최저 단계인 `low`로 보정합니다. 맵에 없거나 JSON을 파싱할 수 없으면 요청 바디를 그대로 전달합니다. `reasoning.summary` / `reasoning.mode` 등 다른 필드는 변경하지 않습니다.
 
-> **주의:** API 라우트 자체에는 인증이 없습니다. `UseSsl`이 꺼져 있으면 HTTP로 수신하므로, 외부에 노출할 때는 TLS·인증을 제공하는 프록시/게이트웨이 뒤에 두거나 `UseSsl: true`로 HTTPS를 켜세요.
+> **주의:** API 라우트 자체에는 인증이 없습니다. `Ssl.UseSsl`이 꺼져 있으면 HTTP로 수신하므로, 외부에 노출할 때는 TLS·인증을 제공하는 프록시/게이트웨이 뒤에 두거나 `Ssl.UseSsl: true`로 HTTPS를 켜세요.
 
 ## 실행
 

@@ -34,7 +34,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
         {
             _httpClient = httpClient;
             _logger = logger;
-            _endpoint = NormalizeOpenAIEndpoint(configuration.OpenAIEndpoint);
+            _endpoint = NormalizeOpenAIEndpoint(configuration.OpenAI.OpenAIEndpoint);
             _chatCompletionsUri = new Uri($"{_endpoint}/{ChatCompletionsPath}");
             _responsesUri = new Uri($"{_endpoint}/{ResponsesPath}");
             _modelsUri = new Uri($"{_endpoint}/{ModelsPath}");

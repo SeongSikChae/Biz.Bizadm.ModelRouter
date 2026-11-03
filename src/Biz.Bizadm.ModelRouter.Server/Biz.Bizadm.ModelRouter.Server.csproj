@@ -8,6 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Biz.Bizadm.KMS" Version="1.0.6" />
+    <PackageReference Include="Biz.Bizadm.KMS.Credentials" Version="1.0.2" />
     <PackageReference Include="Biz.Bizadm.Serilog.Enrichers.Caller" Version="1.0.0" />
     <PackageReference Include="Biz.Bizadm.Serilog.Sinks.File.Extensions" Version="1.0.0" />
     <PackageReference Include="Biz.Bizadm.System.Configuration.Extensions" Version="1.0.1" />
