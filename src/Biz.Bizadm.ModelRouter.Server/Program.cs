@@ -247,28 +247,35 @@ namespace Biz.Bizadm.ModelRouter.Server
 
             builder.Services.AddSystemd();
             builder.Services.AddWindowsService();
-            builder.Services.AddSingleton(configuration);
-
-            builder.Services.AddHttpClient(ProviderClientRegistry.HttpClientName, httpClient =>
-            {
-                httpClient.Timeout = Timeout.InfiniteTimeSpan;
-            });
-            builder.Services.AddSingleton<ProviderClientRegistry>();
-            builder.Services.AddSingleton<ModelRouteResolver>();
-
-            builder.Services.AddControllers();
-            // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-            builder.Services.AddOpenApi();
+            ConfigureServices(builder.Services, configuration);
 
             return builder.Build();
         }
 
-        private static async Task StartAsync(WebApplication app, CmdMain cmdMain, Configuration configuration)
+        /// <summary>호스팅(Kestrel·TLS·Serilog 파일·서비스 등록)을 뺀 애플리케이션 서비스. 테스트도 같은 구성을 쓴다.</summary>
+        internal static void ConfigureServices(IServiceCollection services, Configuration configuration)
+        {
+            services.AddSingleton(configuration);
+
+            services.AddHttpClient(ProviderClientRegistry.HttpClientName, httpClient =>
+            {
+                httpClient.Timeout = Timeout.InfiniteTimeSpan;
+            });
+            services.AddSingleton<ProviderClientRegistry>();
+            services.AddSingleton<ModelRouteResolver>();
+
+            // 테스트 프로세스에서는 진입 어셈블리가 testhost이므로 컨트롤러 어셈블리를 명시한다.
+            services.AddControllers().AddApplicationPart(typeof(Program).Assembly);
+            // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
+            services.AddOpenApi();
+        }
+
+        /// <summary>HTTP 요청 파이프라인. 테스트도 같은 구성을 쓴다.</summary>
+        internal static void ConfigurePipeline(WebApplication app)
         {
             // 라우트 표를 기동 시점에 만들어 ReasoningByModel 키 경고를 바로 남긴다.
             app.Services.GetRequiredService<ModelRouteResolver>();
 
-            // Configure the HTTP request pipeline.
             if (app.Environment.IsDevelopment())
             {
                 app.MapOpenApi();
@@ -278,7 +285,11 @@ namespace Biz.Bizadm.ModelRouter.Server
             app.UseAuthorization();
 
             app.MapControllers();
+        }
 
+        private static async Task StartAsync(WebApplication app, CmdMain cmdMain, Configuration configuration)
+        {
+            ConfigurePipeline(app);
             await app.RunAsync();
         }
     }
