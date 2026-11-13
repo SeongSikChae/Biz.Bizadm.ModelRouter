@@ -252,14 +252,13 @@ public class ChatResponsesBridgeUsageTests
         }));
         AzureFoundryChatClient client = new(
             httpClient,
-            new Biz.Bizadm.ModelRouter.Server.Configuration
+            new Biz.Bizadm.ModelRouter.Server.Configuration.ProviderConfiguration
             {
-                OpenAI = new()
-                {
-                    OpenAIEndpoint = "https://foundry.example/openai",
-                    OpenAIKey = "test-key"
-                }
+                Type = Biz.Bizadm.ModelRouter.Server.ProviderType.AzureFoundry,
+                Endpoint = "https://foundry.example/openai",
+                Key = "test-key"
             },
+            new Biz.Bizadm.ModelRouter.Server.Configuration(),
             NullLogger<AzureFoundryChatClient>.Instance);
 
         using HttpResponseMessage chatResponse = await client.ForwardChatCompletionsAsync(

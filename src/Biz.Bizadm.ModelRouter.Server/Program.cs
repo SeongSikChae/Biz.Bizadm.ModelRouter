@@ -2,7 +2,7 @@
 using Biz.Bizadm.KMS.Cipher;
 using Biz.Bizadm.KMS.Credentials.Cipher;
 using Biz.Bizadm.ModelRouter.Server.Middleware;
-using Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry;
+using Biz.Bizadm.ModelRouter.Server.Models.Provider;
 using CommandLine;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Serilog;
@@ -94,21 +94,26 @@ namespace Biz.Bizadm.ModelRouter.Server
 
             if (hasCertificatePassword)
                 ssl!.ServerCertificatePassword = EncryptIfNeeded(ssl.ServerCertificatePassword);
-            configuration.OpenAI.OpenAIKey = EncryptIfNeeded(configuration.OpenAI.OpenAIKey);
+            foreach (Configuration.ProviderConfiguration provider in configuration.Providers.Values)
+                provider.Key = EncryptIfNeeded(provider.Key);
 
             if (rewrite)
                 WriteConfiguration(configFileInfo, configuration);
 
             if (hasCertificatePassword)
                 ssl!.ServerCertificatePassword = dekCipherService.Decrypt(ssl.ServerCertificatePassword);
-            configuration.OpenAI.OpenAIKey = dekCipherService.Decrypt(configuration.OpenAI.OpenAIKey);
+            foreach (Configuration.ProviderConfiguration provider in configuration.Providers.Values)
+                provider.Key = dekCipherService.Decrypt(provider.Key);
         }
+
+        internal static ISerializer CreateConfigurationSerializer()
+            => new SerializerBuilder()
+                .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull)
+                .Build();
 
         private static void WriteConfiguration(FileInfo configFileInfo, Configuration configuration)
         {
-            ISerializer serializer = new SerializerBuilder()
-                .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull)
-                .Build();
+            ISerializer serializer = CreateConfigurationSerializer();
             string tempFilePath = configFileInfo.FullName + ".tmp";
             try
             {
@@ -144,6 +149,9 @@ namespace Biz.Bizadm.ModelRouter.Server
                     .MinimumLevel.Information()
                     .MinimumLevel.Override(
                         "Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry.AzureFoundryChatClient",
+                        Serilog.Events.LogEventLevel.Debug)
+                    .MinimumLevel.Override(
+                        "Biz.Bizadm.ModelRouter.Server.Models.Provider.Anthropic.AnthropicMessagesClient",
                         Serilog.Events.LogEventLevel.Debug)
                     .Enrich.WithCaller()
                     .WriteTo.Console(
@@ -241,11 +249,12 @@ namespace Biz.Bizadm.ModelRouter.Server
             builder.Services.AddWindowsService();
             builder.Services.AddSingleton(configuration);
 
-            builder.Services.AddHttpClient<AzureFoundryChatClient>((_, httpClient) =>
+            builder.Services.AddHttpClient(ProviderClientRegistry.HttpClientName, httpClient =>
             {
-                ConfigureProviderAuthentication(httpClient, configuration);
                 httpClient.Timeout = Timeout.InfiniteTimeSpan;
             });
+            builder.Services.AddSingleton<ProviderClientRegistry>();
+            builder.Services.AddSingleton<ModelRouteResolver>();
 
             builder.Services.AddControllers();
             // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
@@ -254,24 +263,11 @@ namespace Biz.Bizadm.ModelRouter.Server
             return builder.Build();
         }
 
-        internal static void ConfigureProviderAuthentication(HttpClient httpClient, Configuration configuration)
-        {
-            switch (configuration.OpenAI.Provider)
-            {
-                case Provider.AzureFoundry:
-                    httpClient.DefaultRequestHeaders.Add("api-key", configuration.OpenAI.OpenAIKey);
-                    break;
-                case Provider.OpenAI:
-                    httpClient.DefaultRequestHeaders.Authorization =
-                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", configuration.OpenAI.OpenAIKey);
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(configuration.OpenAI.Provider), configuration.OpenAI.Provider, "Unsupported provider.");
-            }
-        }
-
         private static async Task StartAsync(WebApplication app, CmdMain cmdMain, Configuration configuration)
         {
+            // 라우트 표를 기동 시점에 만들어 ReasoningByModel 키 경고를 바로 남긴다.
+            app.Services.GetRequiredService<ModelRouteResolver>();
+
             // Configure the HTTP request pipeline.
             if (app.Environment.IsDevelopment())
             {

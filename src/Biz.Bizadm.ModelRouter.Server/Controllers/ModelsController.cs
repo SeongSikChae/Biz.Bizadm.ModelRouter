@@ -1,49 +1,66 @@
-using Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry;
+using System.Text.Json.Nodes;
+using Biz.Bizadm.ModelRouter.Server.Models.Provider;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Biz.Bizadm.ModelRouter.Server.Controllers
 {
+    /// <summary>설정의 Providers[*].Models로 모델 목록을 응답한다. upstream을 호출하지 않는다(설계 D3·5절).</summary>
     [ApiController]
     [Route("v1")]
     public sealed class ModelsController : ControllerBase
     {
-        private readonly AzureFoundryChatClient _azureFoundryChatClient;
+        private readonly ModelRouteResolver _resolver;
 
-        public ModelsController(AzureFoundryChatClient azureFoundryChatClient)
+        public ModelsController(ModelRouteResolver resolver)
         {
-            _azureFoundryChatClient = azureFoundryChatClient;
+            _resolver = resolver;
         }
 
         [AllowAnonymous]
         [HttpGet("models")]
-        public async Task ListModels(CancellationToken cancellationToken)
+        public Task ListModels(CancellationToken cancellationToken)
         {
-            using HttpResponseMessage upstream = await _azureFoundryChatClient.ForwardModelsAsync(cancellationToken);
-            await WriteUpstreamResponseAsync(upstream, cancellationToken);
+            JsonArray data = new JsonArray();
+            foreach (ModelRoute route in _resolver.Routes)
+                data.Add(OpenAiModel(route));
+
+            JsonObject body = new JsonObject
+            {
+                ["object"] = "list",
+                ["data"] = data
+            };
+            return WriteJsonAsync(StatusCodes.Status200OK, body, cancellationToken);
         }
 
         [AllowAnonymous]
         [HttpGet("models/{model}")]
         public async Task GetModel(string model, CancellationToken cancellationToken)
         {
-            using HttpResponseMessage upstream = await _azureFoundryChatClient.ForwardModelAsync(model, cancellationToken);
-            await WriteUpstreamResponseAsync(upstream, cancellationToken);
+            ModelRoute? route = _resolver.FindExact(model);
+            if (route is null)
+            {
+                await RouteErrors.WriteModelNotFoundAsync(Response, ApiProtocol.OpenAI, model, cancellationToken);
+                return;
+            }
+
+            await WriteJsonAsync(StatusCodes.Status200OK, OpenAiModel(route), cancellationToken);
         }
 
-        private async Task WriteUpstreamResponseAsync(
-            HttpResponseMessage upstream,
-            CancellationToken cancellationToken)
+        private static JsonObject OpenAiModel(ModelRoute route)
+            => new JsonObject
+            {
+                ["id"] = route.Name,
+                ["object"] = "model",
+                ["created"] = 0,
+                ["owned_by"] = route.ProviderName
+            };
+
+        private async Task WriteJsonAsync(int statusCode, JsonObject body, CancellationToken cancellationToken)
         {
-            HttpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
-
-            Response.StatusCode = (int)upstream.StatusCode;
-
-            if (upstream.Content.Headers.ContentType is not null)
-                Response.ContentType = upstream.Content.Headers.ContentType.ToString();
-
-            await upstream.Content.CopyToAsync(Response.Body, cancellationToken);
+            Response.StatusCode = statusCode;
+            Response.ContentType = "application/json";
+            await Response.WriteAsync(body.ToJsonString(), cancellationToken);
         }
     }
 }

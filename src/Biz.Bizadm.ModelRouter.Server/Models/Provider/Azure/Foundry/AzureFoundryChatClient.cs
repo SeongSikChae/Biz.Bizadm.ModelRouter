@@ -11,7 +11,6 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
     {
         private const string ChatCompletionsPath = "v1/chat/completions";
         private const string ResponsesPath = "v1/responses";
-        private const string ModelsPath = "v1/models";
         private const int MaxLoggedErrorBodyChars = 4096;
         /// <summary>SupportsNone=false인 모델에서 Effort=none일 때 쓰는 최저 허용 effort.</summary>
         private const string LowestEffortWhenNoneUnsupported = "low";
@@ -20,25 +19,34 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
         private const string DefaultEffortWhenMissing = "medium";
 
         private readonly HttpClient _httpClient;
+        private readonly Configuration.ProviderConfiguration _provider;
         private readonly Uri _chatCompletionsUri;
         private readonly Uri _responsesUri;
-        private readonly Uri _modelsUri;
-        private readonly string _endpoint;
-        private readonly Dictionary<string, ModelReasoningPolicy> _reasoningByModel;
+        private readonly IReadOnlyDictionary<string, ModelReasoningPolicy> _reasoningByModel;
         private readonly ILogger<AzureFoundryChatClient> _logger;
 
         public AzureFoundryChatClient(
             HttpClient httpClient,
+            Configuration.ProviderConfiguration provider,
             Configuration configuration,
+            ILogger<AzureFoundryChatClient> logger)
+            : this(httpClient, provider, BuildReasoningLookup(configuration), logger)
+        {
+        }
+
+        internal AzureFoundryChatClient(
+            HttpClient httpClient,
+            Configuration.ProviderConfiguration provider,
+            IReadOnlyDictionary<string, ModelReasoningPolicy> reasoningByModel,
             ILogger<AzureFoundryChatClient> logger)
         {
             _httpClient = httpClient;
+            _provider = provider;
             _logger = logger;
-            _endpoint = NormalizeOpenAIEndpoint(configuration.OpenAI.OpenAIEndpoint);
-            _chatCompletionsUri = new Uri($"{_endpoint}/{ChatCompletionsPath}");
-            _responsesUri = new Uri($"{_endpoint}/{ResponsesPath}");
-            _modelsUri = new Uri($"{_endpoint}/{ModelsPath}");
-            _reasoningByModel = BuildReasoningLookup(configuration);
+            string endpoint = ProviderEndpoints.OpenAiBase(provider);
+            _chatCompletionsUri = new Uri($"{endpoint}/{ChatCompletionsPath}");
+            _responsesUri = new Uri($"{endpoint}/{ResponsesPath}");
+            _reasoningByModel = reasoningByModel;
         }
 
         /// <summary>
@@ -67,7 +75,8 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             Stream requestBody,
             string? contentType,
             CancellationToken cancellationToken,
-            string? requestId = null)
+            string? requestId = null,
+            string? upstreamModel = null)
         {
             using MemoryStream bufferedBody = new MemoryStream();
             await requestBody.CopyToAsync(bufferedBody, cancellationToken);
@@ -82,9 +91,10 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
 
             TryGetModelName(root, out string? requestedModel);
             TrySplitModelEffortSuffix(requestedModel, out string? model, out string? suffixEffort);
-            if (suffixEffort is not null)
+            string? sentModel = upstreamModel ?? model;
+            if (suffixEffort is not null || !string.Equals(sentModel, requestedModel, StringComparison.Ordinal))
             {
-                root["model"] = model;
+                root["model"] = sentModel;
                 baseline = SerializeJsonObject(root);
             }
 
@@ -167,7 +177,8 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
         public async Task<HttpResponseMessage> ForwardResponsesAsync(
             Stream requestBody,
             string? contentType,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? upstreamModel = null)
         {
             using MemoryStream bufferedBody = new MemoryStream();
             await requestBody.CopyToAsync(bufferedBody, cancellationToken);
@@ -183,9 +194,10 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
 
             TryGetModelName(root, out string? requestedModel);
             TrySplitModelEffortSuffix(requestedModel, out string? model, out string? suffixEffort);
-            if (suffixEffort is not null)
+            string? sentModel = upstreamModel ?? model;
+            if (suffixEffort is not null || !string.Equals(sentModel, requestedModel, StringComparison.Ordinal))
             {
-                root["model"] = model;
+                root["model"] = sentModel;
                 baseline = SerializeJsonObject(root);
                 payload = baseline;
             }
@@ -210,19 +222,6 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 cancellationToken);
 
             return response;
-        }
-
-        public Task<HttpResponseMessage> ForwardModelsAsync(CancellationToken cancellationToken)
-        {
-            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, _modelsUri);
-            return SendAsync(request, cancellationToken);
-        }
-
-        public Task<HttpResponseMessage> ForwardModelAsync(string model, CancellationToken cancellationToken)
-        {
-            Uri modelUri = new Uri($"{_endpoint}/{ModelsPath}/{Uri.EscapeDataString(model)}");
-            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, modelUri);
-            return SendAsync(request, cancellationToken);
         }
 
         private async Task<HttpResponseMessage> ForwardViaResponsesAsync(
@@ -452,6 +451,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            ProviderAuthentication.Apply(request, _provider, ApiProtocol.OpenAI);
             string path = request.RequestUri?.AbsolutePath ?? string.Empty;
             _logger.LogInformation(
                 "Upstream send Method={Method} Path={Path} PayloadBytes={PayloadBytes}",
@@ -625,7 +625,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             return text[..MaxLoggedErrorBodyChars] + "...(truncated)";
         }
 
-        private static Dictionary<string, ModelReasoningPolicy> BuildReasoningLookup(Configuration configuration)
+        internal static Dictionary<string, ModelReasoningPolicy> BuildReasoningLookup(Configuration configuration)
         {
             Dictionary<string, ModelReasoningPolicy> lookup =
                 new Dictionary<string, ModelReasoningPolicy>(StringComparer.OrdinalIgnoreCase);
@@ -691,7 +691,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
                 : NormalizeEffort(effort, supportsNone);
         }
 
-        private static bool TrySplitModelEffortSuffix(
+        internal static bool TrySplitModelEffortSuffix(
             string? requestedModel,
             out string? baseModel,
             out string? effort)
@@ -786,7 +786,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             return false;
         }
 
-        private sealed record ModelReasoningPolicy(
+        internal sealed record ModelReasoningPolicy(
             string? Effort,
             ChatToolsMode ChatToolsMode,
             bool SupportsNone);
