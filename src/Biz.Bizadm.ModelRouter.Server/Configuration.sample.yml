@@ -45,7 +45,7 @@ Kms:
 # 요청 model 접미사로 설정 Effort를 재정의할 수 있습니다:
 # 예: Bizadm-GPT-6-LUNA-high 요청은 upstream model=Bizadm-GPT-6-LUNA, effort=high 로 전달
 # 허용 접미사: -none, -low, -medium, -high, -xhigh, -max
-# 권장: 모델별 reasoning / chat+tools 정책 (키는 Providers[*].Models[].Name, OpenAI 프로토콜 라우트에 적용)
+# 모델별 reasoning / chat+tools 정책 (키는 Providers[*].Models[].Name, OpenAI 프로토콜 라우트에 적용)
 # ChatToolsMode:
 #   BridgeToResponses - tools+reasoning → Responses 우회 후 chat 응답으로 변환 (Cursor/에이전트 권장)
 #   ForceNone         - chat에 reasoning_effort=none (LUNA 저하 경로; SupportsNone=false면 bridge 폴백)
@@ -59,7 +59,3 @@ ReasoningByModel:
     Effort: "medium"
     ChatToolsMode: BridgeToResponses
     SupportsNone: false
-
-# 하위 호환(비권장): 모델명 → effort 문자열만 지정. tools가 있으면 BridgeToResponses로 취급.
-# ReasoningEffortByModel:
-#   Bizadm-GPT-6-LUNA: "medium"

@@ -28,7 +28,6 @@ Anthropic | OpenAI 입력 ──(model 이름으로 라우팅)──> Anthropic 
   - tools + `BridgeToResponses`: Responses API로 우회 후 chat.completions 형식으로 응답 변환 (Cursor/에이전트 권장)
   - tools + `ForceNone`: chat에 `reasoning_effort: none` (지연/비용 우선 저하 경로; `SupportsNone: false`면 bridge 폴백)
   - `/v1/responses`에는 `Effort`를 `reasoning.effort`로 주입
-  - 하위 호환: `ReasoningEffortByModel` 문자열 맵은 tools 시 `BridgeToResponses`로 취급
 - 콘솔 및 날짜별 파일 로그 기록 (`X-Request-Id` 응답 헤더 포함)
 - 선택적 HTTPS (`Ssl.UseSsl`), TLS 1.2/1.3, HTTP/1·2·3
 - 설정 보안정보(`Ssl.ServerCertificatePassword`, `Providers[*].Key`) 기동 시 암호화 저장 (`Biz.Bizadm.KMS`, OS 자격 증명 금고 KEK)
@@ -139,7 +138,6 @@ ReasoningByModel:
 | `Kms.KekIterations` | 아니오 | KEK PBKDF2 반복 횟수. 기본값 `600000` |
 | `Kms.CredentialStore` | 아니오 | `GCM_CREDENTIAL_STORE` 값 (예: Linux 헤드리스의 `gpg`) |
 | `ReasoningByModel` | 아니오 | 모델별 Effort / ChatToolsMode / SupportsNone |
-| `ReasoningEffortByModel` | 아니오 | 하위 호환 effort 문자열 맵 (tools 시 BridgeToResponses) |
 
 `Endpoint`는 `/v1` 이전까지만 지정합니다. `/v1` 이후가 포함되어 있으면 서버가 제거한 뒤 경로를 붙입니다.
 
@@ -177,6 +175,22 @@ Providers:
 - Foundry **프로젝트** 엔드포인트(`.../api/projects/x`)는 지원하지 않습니다. 리소스 엔드포인트를 적으세요.
 - `ReasoningByModel` 키는 `Models[].Name` 기준입니다. 별칭을 도입하면서 키를 배포명 그대로 두면 정책이 적용되지 않으며, 기동 시 경고 로그가 남습니다.
 - 본문이 JSON이 아니거나 `model`이 없는 요청은 upstream으로 넘기지 않고 404를 반환합니다.
+
+`ReasoningEffortByModel`은 더 이상 지원하지 않으며, 남아 있으면 기동 시 YAML 오류가 납니다. 같은 동작은 다음과 같이 옮깁니다.
+
+```yaml
+# 이전
+ReasoningEffortByModel:
+  YOUR-MODEL: medium
+# 이후
+ReasoningByModel:
+  YOUR-MODEL:
+    Effort: medium
+    ChatToolsMode: BridgeToResponses
+    SupportsNone: true
+```
+
+키는 `Models[].Name` 기준입니다. 맞는 `Name`이 없으면 정책이 적용되지 않고 기동 시 경고 로그가 남습니다.
 
 ### 보안정보 암호화
 
