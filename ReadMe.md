@@ -257,7 +257,8 @@ Cursor `Show Context Usage` 표시는 전달된 토큰 `usage` 외에도 Cursor�
 - Anthropic 입력의 서버 도구(`web_search_*`, `bash_*`, `text_editor_*` 등 `input_schema` 없는 tool)와 `document` 블록은 OpenAI 계열 모델로 변환할 수 없어 400을 반환합니다.
 - OpenAI 입력에서 Anthropic 모델로 tool 루프를 돌 때, OpenAI 형식은 thinking 블록을 되돌려 보낼 수 없으므로 모델에 따라 두 번째 요청부터 upstream이 거부할 수 있습니다(실호출 확인 전).
 - 대상 모델이 허용하지 않는 effort(예: GPT에 `max`, 일부 Claude에 `xhigh`)는 upstream이 400을 반환할 수 있습니다.
-- `BridgeToResponses` 경로는 chat `tool_choice`를 Responses로 그대로 복사하고 `stop`을 옮기지 않으므로, Anthropic 입력의 `tool_choice: {type: tool}`·`stop_sequences`가 이 경로에서 거부되거나 사라질 수 있습니다(기존 동작).
+- `BridgeToResponses` 경로는 chat `tool_choice`를 Responses로 그대로 복사하고 `stop`·`response_format`을 옮기지 않으므로, Anthropic 입력의 `tool_choice: {type: tool}`·`stop_sequences`·`output_config.format`이 이 경로에서 거부되거나 사라질 수 있습니다(기존 동작).
+- 스트리밍 중 upstream 연결이 끊기면 입력 프로토콜 형식의 오류 이벤트(OpenAI: 오류 청크 + `[DONE]`, Anthropic: `event: error`)로 끝냅니다.
 - OpenAI 계열 모델의 `count_tokens`는 텍스트 문자 수 / 4 근사치이며, 한국어 등은 과소추정될 수 있습니다.
 
 ### Claude Code·Cursor 연결

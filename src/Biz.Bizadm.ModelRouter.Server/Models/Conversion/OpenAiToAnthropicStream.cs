@@ -98,84 +98,92 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Conversion
                 await EmitAsync("message_stop", new JsonObject());
             }
 
-            await foreach (SseEvent sse in SseReader.ReadAsync(upstream, cancellationToken))
+            try
             {
-                if (sse.Data.Trim() == "[DONE]")
+                await foreach (SseEvent sse in SseReader.ReadAsync(upstream, cancellationToken))
                 {
-                    await FinishAsync();
-                    return;
-                }
-
-                if (!AnthropicToOpenAiStream.TryParseObject(sse.Data, out JsonObject? chunk))
-                    break;
-
-                if (chunk!["error"] is JsonNode)
-                {
-                    await WriteAsync(ErrorConverter.OpenAiToAnthropicStreamEvent(chunk));
-                    return;
-                }
-
-                if (chunk["usage"] is JsonObject usage)
-                    state.Usage = usage.DeepClone();
-
-                if (chunk["choices"] is not JsonArray { Count: > 0 } choices || choices[0] is not JsonObject choice)
-                    continue;
-
-                if (!state.Started
-                    && chunk["model"] is JsonValue modelValue
-                    && modelValue.TryGetValue(out string? model)
-                    && !string.IsNullOrEmpty(model))
-                {
-                    state.Model = model;
-                }
-                await EnsureStartedAsync();
-
-                JsonNode? delta = choice["delta"];
-                if (delta?["content"] is JsonValue contentValue
-                    && contentValue.TryGetValue(out string? text)
-                    && !string.IsNullOrEmpty(text))
-                {
-                    if (!state.TextOpen)
+                    if (sse.Data.Trim() == "[DONE]")
                     {
-                        state.TextOpen = true;
-                        await EmitAsync("content_block_start", new JsonObject
+                        await FinishAsync();
+                        return;
+                    }
+
+                    if (!AnthropicToOpenAiStream.TryParseObject(sse.Data, out JsonObject? chunk))
+                        break;
+
+                    if (chunk!["error"] is JsonNode)
+                    {
+                        await WriteAsync(ErrorConverter.OpenAiToAnthropicStreamEvent(chunk));
+                        return;
+                    }
+
+                    if (chunk["usage"] is JsonObject usage)
+                        state.Usage = usage.DeepClone();
+
+                    if (chunk["choices"] is not JsonArray { Count: > 0 } choices || choices[0] is not JsonObject choice)
+                        continue;
+
+                    if (!state.Started
+                        && chunk["model"] is JsonValue modelValue
+                        && modelValue.TryGetValue(out string? model)
+                        && !string.IsNullOrEmpty(model))
+                    {
+                        state.Model = model;
+                    }
+                    await EnsureStartedAsync();
+
+                    JsonNode? delta = choice["delta"];
+                    if (delta?["content"] is JsonValue contentValue
+                        && contentValue.TryGetValue(out string? text)
+                        && !string.IsNullOrEmpty(text))
+                    {
+                        if (!state.TextOpen)
+                        {
+                            state.TextOpen = true;
+                            await EmitAsync("content_block_start", new JsonObject
+                            {
+                                ["index"] = state.NextBlockIndex,
+                                ["content_block"] = new JsonObject { ["type"] = "text", ["text"] = "" }
+                            });
+                        }
+
+                        await EmitAsync("content_block_delta", new JsonObject
                         {
                             ["index"] = state.NextBlockIndex,
-                            ["content_block"] = new JsonObject { ["type"] = "text", ["text"] = "" }
+                            ["delta"] = new JsonObject { ["type"] = "text_delta", ["text"] = text }
                         });
                     }
 
-                    await EmitAsync("content_block_delta", new JsonObject
+                    if (delta?["tool_calls"] is JsonArray toolCalls)
                     {
-                        ["index"] = state.NextBlockIndex,
-                        ["delta"] = new JsonObject { ["type"] = "text_delta", ["text"] = text }
-                    });
-                }
-
-                if (delta?["tool_calls"] is JsonArray toolCalls)
-                {
-                    foreach (JsonNode? node in toolCalls)
-                    {
-                        if (node is not JsonObject call)
-                            continue;
-
-                        int index = call["index"] is JsonValue indexValue && indexValue.TryGetValue(out int i) ? i : 0;
-                        if (!state.Tools.TryGetValue(index, out ToolState? tool))
+                        foreach (JsonNode? node in toolCalls)
                         {
-                            tool = new ToolState();
-                            state.Tools[index] = tool;
-                        }
+                            if (node is not JsonObject call)
+                                continue;
 
-                        // id·name은 처음 받은 값만 쓴다(같은 index에 반복돼도 블록을 새로 만들지 않는다).
-                        tool.Id ??= String(call, "id");
-                        tool.Name ??= String(call["function"], "name");
-                        if (String(call["function"], "arguments") is { } arguments)
-                            tool.Arguments.Append(arguments);
+                            int index = call["index"] is JsonValue indexValue && indexValue.TryGetValue(out int i) ? i : 0;
+                            if (!state.Tools.TryGetValue(index, out ToolState? tool))
+                            {
+                                tool = new ToolState();
+                                state.Tools[index] = tool;
+                            }
+
+                            // id·name은 처음 받은 값만 쓴다(같은 index에 반복돼도 블록을 새로 만들지 않는다).
+                            tool.Id ??= String(call, "id");
+                            tool.Name ??= String(call["function"], "name");
+                            if (String(call["function"], "arguments") is { } arguments)
+                                tool.Arguments.Append(arguments);
+                        }
                     }
+
+                    if (String(choice, "finish_reason") is { } finishReason)
+                        state.FinishReason = finishReason;
                 }
 
-                if (String(choice, "finish_reason") is { } finishReason)
-                    state.FinishReason = finishReason;
+            }
+            catch (IOException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // upstream 연결이 전송 중에 끊겼다. 아래 비정상 종료 경로로 알린다.
             }
 
             // [DONE] 없이 끊겼거나 JSON이 아닌 data를 만났다.

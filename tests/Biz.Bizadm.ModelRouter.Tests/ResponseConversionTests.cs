@@ -129,6 +129,23 @@ public sealed class ResponseConversionTests
     }
 
     [TestMethod]
+    public void ResponseConverters_TolerateUnexpectedUpstreamTypes()
+    {
+        JsonObject chat = AnthropicToOpenAiResponse.Convert(Obj("""
+            {"model":123,"stop_reason":5,"content":[{"type":"text","text":7},{"type":"tool_use","id":1,"name":2,"input":{}}]}
+            """), new AnthropicToolIdMapper(), "fb");
+        Assert.AreEqual("fb", chat["model"]!.GetValue<string>());
+        Assert.AreEqual("stop", chat["choices"]![0]!["finish_reason"]!.GetValue<string>());
+
+        JsonObject msg = OpenAiToAnthropicResponse.Convert(Obj("""
+            {"model":false,"choices":[{"finish_reason":1,"message":{"content":{"x":1},"tool_calls":[{"id":3,"function":{"name":4,"arguments":5}}]}}]}
+            """), new AnthropicToolIdMapper(), "fb");
+        Assert.AreEqual("fb", msg["model"]!.GetValue<string>());
+        Assert.AreEqual("end_turn", msg["stop_reason"]!.GetValue<string>());
+        Assert.AreEqual("tool_use", msg["content"]![0]!["type"]!.GetValue<string>());
+    }
+
+    [TestMethod]
     [DataRow(400, "invalid_request_error")]
     [DataRow(401, "authentication_error")]
     [DataRow(403, "permission_error")]

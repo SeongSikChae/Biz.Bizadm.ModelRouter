@@ -247,7 +247,7 @@ model 접미사와 본문 effort가 함께 있으면 **접미사가 우선**한�
 알려진 한계: 대상 모델이 허용하지 않는 effort(예: GPT에 `max`, 일부 Claude에 `xhigh`)는 upstream이 400을 반환할 수 있다. 실호출 확인 항목에 넣고 ReadMe에 적는다.
 
 ### 4.6 알려진 한계 (비범위, ReadMe에 기재)
-- 기존 `BridgeToResponses`는 chat `tool_choice`를 Responses로 그대로 복사하고 `stop`을 옮기지 않는다(`ChatResponsesBridge.cs:28`). 그래서 Anthropic 입력의 `tool_choice{type:tool}`·`stop_sequences`가 Bridge 경로에서 거부되거나 사라질 수 있다. 기존 OpenAI 입력에도 있는 문제이므로 이번 범위에서 고치지 않는다.
+- 기존 `BridgeToResponses`는 chat `tool_choice`를 Responses로 그대로 복사하고 `stop`·`response_format`을 옮기지 않는다(`ChatResponsesBridge.cs:28`). 그래서 Anthropic 입력의 `tool_choice{type:tool}`·`stop_sequences`·`output_config.format`이 Bridge 경로에서 거부되거나 사라질 수 있다(완료 전 독립 검토에서 `response_format` 추가). 기존 OpenAI 입력에도 있는 문제이므로 이번 범위에서 고치지 않는다.
 - `ReasoningByModel` 키는 클라이언트용 `Name` 기준이다. 별칭을 도입하면서 키를 배포명 그대로 두면 정책이 적용되지 않는다. 기동 시 어느 `Name`과도 맞지 않는 키는 경고 로그를 남긴다.
 - Foundry **프로젝트** 엔드포인트(`.../api/projects/x`)는 지원하지 않는다. 리소스 엔드포인트를 적어야 한다.
 - Claude Code는 보조 작업(제목·요약)에 소형 모델을 따로 호출한다. 그 모델을 `Models`에 등록하거나 `ANTHROPIC_DEFAULT_HAIKU_MODEL`을 등록된 이름으로 지정해야 404가 나지 않는다.

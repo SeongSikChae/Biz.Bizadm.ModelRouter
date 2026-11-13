@@ -53,7 +53,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Conversion
                         total += GetString(block, "type") switch
                         {
                             "text" => GetString(block, "text")?.Length ?? 0,
-                            "tool_use" => (block["input"]?.ToJsonString().Length ?? 0) + (GetString(block, "name")?.Length ?? 0),
+                            "tool_use" => block["input"]?.ToJsonString().Length ?? 0,
                             "tool_result" => TextOf(block["content"]).Length,
                             _ => 0
                         };

@@ -9,7 +9,7 @@ public sealed class TokenEstimatorTests
     [TestMethod]
     public void Estimate_CountsTextToolsAndExcludesImagesAndThinking()
     {
-        // system 4 + tool(name 1 + description 3 + schema {"type":"object"} 17) + text 8 + tool_use(name 1 + input {"a":1} 7) + tool_result 4 = 45 → ceil(45/4)=12
+        // system 4 + tool(name 1 + description 3 + schema {"type":"object"} 17) + text 8 + tool_use(input {"a":1} 7) + tool_result 4 = 44 → ceil(44/4)=11
         JsonObject msg = JsonNode.Parse("""
             {"model":"m","system":"SSSS",
              "tools":[{"name":"f","description":"ddd","input_schema":{"type":"object"}}],
@@ -21,7 +21,7 @@ public sealed class TokenEstimatorTests
                                          {"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAAAAAAAA"}}]}]}
             """)!.AsObject();
 
-        Assert.AreEqual(12, TokenEstimator.EstimateAnthropicInput(msg));
+        Assert.AreEqual(11, TokenEstimator.EstimateAnthropicInput(msg));
     }
 
     [TestMethod]

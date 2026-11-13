@@ -19,19 +19,19 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Conversion
                     if (node is not JsonObject block)
                         continue;
 
-                    switch (GetString(block, "type"))
+                    switch (StringOrNull(block, "type"))
                     {
                         case "text":
-                            text.Append(GetString(block, "text"));
+                            text.Append(StringOrNull(block, "text"));
                             break;
                         case "tool_use":
                             toolCalls.Add(new JsonObject
                             {
-                                ["id"] = ids.Restore(GetString(block, "id") ?? string.Empty),
+                                ["id"] = ids.Restore(StringOrNull(block, "id") ?? string.Empty),
                                 ["type"] = "function",
                                 ["function"] = new JsonObject
                                 {
-                                    ["name"] = GetString(block, "name"),
+                                    ["name"] = StringOrNull(block, "name"),
                                     ["arguments"] = (block["input"] ?? new JsonObject()).ToJsonString()
                                 }
                             });
@@ -53,14 +53,14 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Conversion
                 ["id"] = "chatcmpl-" + Guid.NewGuid().ToString("N"),
                 ["object"] = "chat.completion",
                 ["created"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                ["model"] = NonEmpty(GetString(msg, "model")) ?? fallbackModel,
+                ["model"] = NonEmpty(StringOrNull(msg, "model")) ?? fallbackModel,
                 ["choices"] = new JsonArray
                 {
                     new JsonObject
                     {
                         ["index"] = 0,
                         ["message"] = message,
-                        ["finish_reason"] = StopReasonMap.ToOpenAi(GetString(msg, "stop_reason"))
+                        ["finish_reason"] = StopReasonMap.ToOpenAi(StringOrNull(msg, "stop_reason"))
                     }
                 },
                 ["usage"] = UsageMap.ToOpenAi(msg["usage"])

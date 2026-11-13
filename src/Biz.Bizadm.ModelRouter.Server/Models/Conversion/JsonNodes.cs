@@ -26,7 +26,10 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Conversion
         public static JsonObject RequireObject(JsonNode? node, string what)
             => node as JsonObject ?? throw new ConversionException($"{what} must be an object.");
 
-        /// <summary>문자열이면 그대로, part/블록 배열이면 text 항목을 이어 붙인다. null이면 빈 문자열.</summary>
+        /// <summary>
+        /// 문자열이면 그대로, part/블록 배열이면 비어 있지 않은 text 항목을 빈 줄("\n\n")로 이어 붙인다. null이면 빈 문자열.
+        /// system·tool 결과처럼 블록이 의미 단위로 나뉜 곳에 쓴다(assistant 응답 text는 구분자 없이 잇는다).
+        /// </summary>
         public static string TextOf(JsonNode? content)
         {
             switch (content)
@@ -36,16 +39,37 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Conversion
                 case JsonValue value when value.TryGetValue(out string? text):
                     return text ?? string.Empty;
                 case JsonArray parts:
-                    StringBuilder builder = new StringBuilder();
+                    List<string> texts = new List<string>();
                     foreach (JsonNode? part in parts)
                     {
-                        if (part is JsonObject obj && GetString(obj, "type") == "text")
-                            builder.Append(GetString(obj, "text"));
+                        if (part is JsonObject obj && GetString(obj, "type") == "text" && GetString(obj, "text") is { Length: > 0 } text)
+                            texts.Add(text);
                     }
-                    return builder.ToString();
+                    return string.Join("\n\n", texts);
                 default:
                     throw new ConversionException("content must be a string or an array.");
             }
+        }
+
+        /// <summary>응답 쪽 관대한 읽기: 문자열이 아니면 null.</summary>
+        public static string? StringOrNull(JsonNode? node, string name)
+            => node?[name] is JsonValue value && value.TryGetValue(out string? text) ? text : null;
+
+        /// <summary>응답 쪽 관대한 읽기: 문자열이면 그대로, 블록 배열이면 text를 잇고, 그 밖의 타입은 빈 문자열.</summary>
+        public static string TextOrEmpty(JsonNode? content)
+        {
+            if (content is JsonValue value && value.TryGetValue(out string? text))
+                return text ?? string.Empty;
+            if (content is not JsonArray parts)
+                return string.Empty;
+
+            StringBuilder builder = new StringBuilder();
+            foreach (JsonNode? part in parts)
+            {
+                if (StringOrNull(part, "type") == "text")
+                    builder.Append(StringOrNull(part, "text"));
+            }
+            return builder.ToString();
         }
 
         /// <summary>문자열이면 JSON으로 파싱해 객체를 돌려주고, 실패하거나 객체가 아니면 raw_arguments로 감싼다.</summary>

@@ -13,7 +13,7 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Conversion
 
             JsonArray content = new JsonArray();
             string? refusal = NonEmptyString(message["refusal"]);
-            string text = refusal ?? TextOf(message["content"]);
+            string text = refusal ?? TextOrEmpty(message["content"]);
             if (text.Length > 0)
                 content.Add(new JsonObject { ["type"] = "text", ["text"] = text });
 
@@ -27,9 +27,9 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Conversion
                     content.Add(new JsonObject
                     {
                         ["type"] = "tool_use",
-                        ["id"] = ids.Restore(GetString(call, "id") ?? string.Empty),
-                        ["name"] = GetString(function, "name"),
-                        ["input"] = ParseArguments(GetString(function, "arguments"))
+                        ["id"] = ids.Restore(StringOrNull(call, "id") ?? string.Empty),
+                        ["name"] = StringOrNull(function, "name"),
+                        ["input"] = ParseArguments(StringOrNull(function, "arguments"))
                     });
                 }
             }
@@ -39,9 +39,9 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Conversion
                 ["id"] = "msg_" + Guid.NewGuid().ToString("N"),
                 ["type"] = "message",
                 ["role"] = "assistant",
-                ["model"] = AnthropicToOpenAiResponse.NonEmpty(GetString(chat, "model")) ?? fallbackModel,
+                ["model"] = AnthropicToOpenAiResponse.NonEmpty(StringOrNull(chat, "model")) ?? fallbackModel,
                 ["content"] = content,
-                ["stop_reason"] = refusal is not null ? "refusal" : StopReasonMap.ToAnthropic(GetString(choice, "finish_reason")),
+                ["stop_reason"] = refusal is not null ? "refusal" : StopReasonMap.ToAnthropic(StringOrNull(choice, "finish_reason")),
                 ["stop_sequence"] = null,
                 ["usage"] = UsageMap.ToAnthropic(chat["usage"])
             };

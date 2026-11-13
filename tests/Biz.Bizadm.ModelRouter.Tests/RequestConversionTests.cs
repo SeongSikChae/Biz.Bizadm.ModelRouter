@@ -101,6 +101,28 @@ public sealed class RequestConversionTests
     }
 
     [TestMethod]
+    public void ToolIdMapper_MapsIdWithTrailingNewline()
+    {
+        AnthropicToolIdMapper ids = new();
+
+        string mapped = ids.ToProvider("abc\n");
+
+        Assert.AreNotEqual("abc\n", mapped);
+        Assert.AreEqual("abc\n", ids.Restore(mapped));
+        Assert.AreEqual("abc", ids.ToProvider("abc"));
+    }
+
+    [TestMethod]
+    public void ToOpenAi_SystemBlocksAreSeparatedByBlankLine()
+    {
+        JsonObject chat = ToOpenAi("""
+            {"model":"m","system":[{"type":"text","text":"A."},{"type":"text","text":""},{"type":"text","text":"B"}],"messages":[]}
+            """);
+
+        Assert.AreEqual("A.\n\nB", chat["messages"]![0]!["content"]!.GetValue<string>());
+    }
+
+    [TestMethod]
     public void ToAnthropic_ToolsChoiceAndParallel()
     {
         JsonObject result = ToAnthropic("""

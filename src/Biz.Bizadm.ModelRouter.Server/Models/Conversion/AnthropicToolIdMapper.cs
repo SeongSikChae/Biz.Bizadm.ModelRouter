@@ -41,7 +41,8 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Conversion
         public string Restore(string providerId)
             => _toClient.TryGetValue(providerId, out string? clientId) ? clientId : providerId;
 
-        [GeneratedRegex("^[a-zA-Z0-9_-]+$")]
+        // \z: $는 끝의 \n 앞에서도 일치하므로 쓰지 않는다.
+        [GeneratedRegex(@"^[a-zA-Z0-9_-]+\z")]
         private static partial Regex AllowedId();
     }
 }

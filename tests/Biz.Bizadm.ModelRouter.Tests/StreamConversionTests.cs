@@ -168,6 +168,56 @@ public sealed class StreamConversionTests
         StringAssert.Contains(Data(events[^2])["error"]!["message"]!.GetValue<string>(), "stream ended before a terminal event");
     }
 
+    /// <summary>앞부분 바이트를 준 뒤 IOException을 던져 전송 중 연결 끊김을 흉내 낸다.</summary>
+    private sealed class BrokenStream(string prefix) : Stream
+    {
+        private readonly MemoryStream _inner = new(Encoding.UTF8.GetBytes(prefix));
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            int read = _inner.Read(buffer, offset, count);
+            return read > 0 ? read : throw new IOException("connection reset");
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [TestMethod]
+    public async Task ToOpenAi_UpstreamIoErrorEndsWithErrorChunk()
+    {
+        using MemoryStream output = new();
+        await AnthropicToOpenAiStream.ConvertAsync(
+            new BrokenStream(AnthropicEvent("message_start", "{\"type\":\"message_start\",\"message\":{\"model\":\"m\"}}")),
+            output, "fb", false, new AnthropicToolIdMapper(), CancellationToken.None);
+        output.Position = 0;
+        List<SseEvent> events = await ReadAllAsync(output);
+
+        Assert.AreEqual("[DONE]", events[^1].Data);
+        StringAssert.Contains(Data(events[^2])["error"]!["message"]!.GetValue<string>(), "stream ended before a terminal event");
+    }
+
+    [TestMethod]
+    public async Task ToAnthropic_UpstreamIoErrorEndsWithErrorEvent()
+    {
+        using MemoryStream output = new();
+        await OpenAiToAnthropicStream.ConvertAsync(
+            new BrokenStream(OpenAiChunk("{\"content\":\"x\"}")),
+            output, "fb", new AnthropicToolIdMapper(), CancellationToken.None);
+        output.Position = 0;
+        List<SseEvent> events = await ReadAllAsync(output);
+
+        Assert.AreEqual("error", events[^1].Event);
+        Assert.IsFalse(events.Any(e => e.Event == "message_stop"));
+    }
+
     // ---------- OpenAI → Anthropic ----------
 
     [TestMethod]
