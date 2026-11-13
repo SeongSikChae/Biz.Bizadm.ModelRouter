@@ -630,21 +630,6 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry
             Dictionary<string, ModelReasoningPolicy> lookup =
                 new Dictionary<string, ModelReasoningPolicy>(StringComparer.OrdinalIgnoreCase);
 
-            if (configuration.ReasoningEffortByModel is { Count: > 0 })
-            {
-                foreach ((string model, string effort) in configuration.ReasoningEffortByModel)
-                {
-                    if (string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(effort))
-                        continue;
-
-                    // 레거시 맵: tools가 있으면 BridgeToResponses (무조건 none 제거)
-                    lookup[model.Trim()] = new ModelReasoningPolicy(
-                        effort.Trim(),
-                        ChatToolsMode.BridgeToResponses,
-                        SupportsNone: true);
-                }
-            }
-
             if (configuration.ReasoningByModel is { Count: > 0 })
             {
                 foreach ((string model, ModelReasoningOptions? options) in configuration.ReasoningByModel)

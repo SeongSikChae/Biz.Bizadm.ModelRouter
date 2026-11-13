@@ -69,6 +69,14 @@ public sealed class ProviderSupportTests
     }
 
     [TestMethod]
+    public void DeserializeConfiguration_RejectsRemovedReasoningEffortByModel()
+    {
+        string yaml = CreateYaml(ValidProviders) + "ReasoningEffortByModel:\n  foundry-claude: medium\n";
+
+        Assert.ThrowsExactly<YamlException>(() => DeserializeConfiguration(yaml));
+    }
+
+    [TestMethod]
     public void DeserializeConfiguration_RejectsUnknownType()
     {
         Assert.ThrowsExactly<YamlException>(() => DeserializeConfiguration(CreateYaml(SingleProvider("Type: Unknown"))));

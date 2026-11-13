@@ -35,7 +35,7 @@ namespace Biz.Bizadm.ModelRouter.Server
         public KmsConfiguration Kms { get; set; } = null!;
 
         /// <summary>
-        /// 모델별 reasoning 정책 (권장).
+        /// 모델별 reasoning 정책.
         /// YAML 예:
         /// ReasoningByModel:
         ///   Bizadm-GPT-6-LUNA:
@@ -48,15 +48,6 @@ namespace Biz.Bizadm.ModelRouter.Server
         ///     SupportsNone: false
         /// </summary>
         public Dictionary<string, ModelReasoningOptions>? ReasoningByModel { get; set; }
-
-        /// <summary>
-        /// 하위 호환: 모델명 → effort 문자열 맵.
-        /// tools가 있으면 BridgeToResponses로 취급한다.
-        /// YAML 예:
-        /// ReasoningEffortByModel:
-        ///   Bizadm-GPT-6-LUNA: medium
-        /// </summary>
-        public Dictionary<string, string>? ReasoningEffortByModel { get; set; }
 
         public void Validate()
         {
