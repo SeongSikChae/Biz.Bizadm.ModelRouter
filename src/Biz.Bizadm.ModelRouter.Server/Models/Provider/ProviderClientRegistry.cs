@@ -1,3 +1,4 @@
+using Biz.Bizadm.ModelRouter.Server.Models.Provider.Anthropic;
 using Biz.Bizadm.ModelRouter.Server.Models.Provider.Azure.Foundry;
 
 namespace Biz.Bizadm.ModelRouter.Server.Models.Provider
@@ -29,5 +30,11 @@ namespace Biz.Bizadm.ModelRouter.Server.Models.Provider
                 route.Provider,
                 _reasoningByModel,
                 _loggerFactory.CreateLogger<AzureFoundryChatClient>());
+
+        public AnthropicMessagesClient GetAnthropic(ModelRoute route)
+            => new AnthropicMessagesClient(
+                _httpClientFactory.CreateClient(HttpClientName),
+                route.Provider,
+                _loggerFactory.CreateLogger<AnthropicMessagesClient>());
     }
 }
