@@ -319,6 +319,27 @@ public sealed class ProviderSupportTests
         Assert.AreEqual("Model-A", JsonNode.Parse(bodies[1])!["model"]!.GetValue<string>());
     }
 
+    [TestMethod]
+    public void SampleConfiguration_DeserializesAndValidates()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "Biz.Bizadm.ModelRouter.slnx")))
+            directory = directory.Parent;
+        Assert.IsNotNull(directory, "저장소 루트를 찾지 못했습니다.");
+
+        string yaml = File.ReadAllText(Path.Combine(directory.FullName, "src", "Biz.Bizadm.ModelRouter.Server", "Configuration.sample.yml"));
+        Configuration configuration = DeserializeConfiguration(yaml);
+
+        ModelRouteResolver resolver = new(configuration, NullLogger<ModelRouteResolver>.Instance);
+        ModelRoute? foundryClaude = resolver.Resolve("foundry-claude-sonnet-5-5");
+        Assert.IsNotNull(foundryClaude);
+        Assert.AreEqual(ApiProtocol.Anthropic, foundryClaude.Api);
+        Assert.AreEqual("claude-sonnet-5-5", foundryClaude.UpstreamModel);
+        Assert.AreEqual("anthropic", resolver.Resolve("claude-sonnet-5-5")!.ProviderName);
+        foreach (string key in configuration.ReasoningByModel!.Keys)
+            Assert.IsNotNull(resolver.FindExact(key), $"ReasoningByModel 키 '{key}'가 Models에 없습니다.");
+    }
+
     internal static Configuration DeserializeConfiguration(string yaml)
     {
         Configuration configuration = new DeserializerBuilder().Build().Deserialize<Configuration>(yaml);

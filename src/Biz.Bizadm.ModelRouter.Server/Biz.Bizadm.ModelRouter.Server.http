@@ -1,6 +1,38 @@
 @Biz.Bizadm.ModelRouter.Server_HostAddress = http://localhost:5174
 
-GET {{Biz.Bizadm.ModelRouter.Server_HostAddress}}/weatherforecast/
+### 모델 목록 (OpenAI 형식)
+GET {{Biz.Bizadm.ModelRouter.Server_HostAddress}}/v1/models
 Accept: application/json
+
+### 모델 목록 (Anthropic 형식)
+GET {{Biz.Bizadm.ModelRouter.Server_HostAddress}}/v1/models
+anthropic-version: 2023-06-01
+
+### OpenAI Chat Completions
+POST {{Biz.Bizadm.ModelRouter.Server_HostAddress}}/v1/chat/completions
+Content-Type: application/json
+
+{"model":"Bizadm-GPT-6-LUNA","messages":[{"role":"user","content":"안녕하세요"}]}
+
+### Anthropic Messages
+POST {{Biz.Bizadm.ModelRouter.Server_HostAddress}}/v1/messages
+Content-Type: application/json
+anthropic-version: 2023-06-01
+
+{"model":"claude-sonnet-5-5","max_tokens":1024,"messages":[{"role":"user","content":"안녕하세요"}]}
+
+### Anthropic Messages → OpenAI 계열 모델 (교차 변환)
+POST {{Biz.Bizadm.ModelRouter.Server_HostAddress}}/v1/messages
+Content-Type: application/json
+anthropic-version: 2023-06-01
+
+{"model":"Bizadm-GPT-6-LUNA","max_tokens":1024,"messages":[{"role":"user","content":"안녕하세요"}]}
+
+### Anthropic count_tokens
+POST {{Biz.Bizadm.ModelRouter.Server_HostAddress}}/v1/messages/count_tokens
+Content-Type: application/json
+anthropic-version: 2023-06-01
+
+{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"안녕하세요"}]}
 
 ###

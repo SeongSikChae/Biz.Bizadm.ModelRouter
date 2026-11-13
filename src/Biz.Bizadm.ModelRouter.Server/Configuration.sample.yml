@@ -8,15 +8,32 @@ Port: 80 # 수신 포트
 #   ServerCertificatePassword: "replace-with-certificate-password" # 기동 시 KMS로 암호화(DEKENC:)되어 저장, 런타임에 복호화
 #   CertificateChain: "" # 선택: 인증서 체인에 포함할 인증서 SimpleName (쉼표 구분)
 #   IncludeCipherSuites: "TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256" # 선택: 허용할 TLS 암호 스위트 (쉼표 구분, TlsCipherSuite enum 이름)
-OpenAI:
-  Provider: AzureFoundry # AzureFoundry 또는 OpenAI (생략 시 AzureFoundry)
-  OpenAIEndpoint: "https://YOUR-RESOURCE.services.ai.azure.com/openai" # AzureFoundry: .../openai, OpenAI: https://api.openai.com (/v1 이후 경로는 자동 제거)
-  OpenAIKey: "replace-with-provider-api-key" # AzureFoundry는 api-key, OpenAI는 Bearer 인증. 기동 시 KMS로 암호화(DEKENC:)되어 저장, 런타임에 복호화
+# upstream 공급자. 요청 model은 아래 Models[].Name 중 하나여야 하며(대소문자 무시), 없으면 404를 반환합니다.
+Providers:
+  foundry:
+    Type: AzureFoundry # Anthropic | AzureFoundry | OpenAI (필수)
+    Endpoint: "https://YOUR-RESOURCE.services.ai.azure.com" # Foundry 리소스 루트. /openai, /anthropic은 자동으로 붙음 (끝의 /openai, /anthropic, /v1… 는 제거)
+    Key: "replace-with-foundry-api-key" # OpenAI 경로는 api-key, Anthropic 경로는 x-api-key. 기동 시 KMS로 암호화(DEKENC:)되어 저장, 런타임에 복호화
+    Models:
+      - Name: Bizadm-GPT-6-LUNA # 클라이언트가 요청 model로 보내는 이름 (모든 공급자에서 고유)
+      - Name: Bizadm-GPT-6.1-SOL
+      - Name: foundry-claude-sonnet-5-5
+        UpstreamModel: claude-sonnet-5-5 # upstream에 보낼 실제 모델/배포명 (생략 시 Name, 공급자 간 중복 허용)
+        Api: Anthropic # AzureFoundry만 지정. Anthropic이면 /anthropic/v1/messages, 생략 시 OpenAI(/openai/v1/...)
+  anthropic:
+    Type: Anthropic
+    Endpoint: "https://api.anthropic.com"
+    Key: "replace-with-anthropic-api-key" # x-api-key
+    Models:
+      - Name: claude-sonnet-5-5
+      - Name: claude-haiku-5-5 # Claude Code 보조 작업용 소형 모델도 등록
 # OpenAI 사용 예시:
-# OpenAI:
-#   Provider: OpenAI
-#   OpenAIEndpoint: "https://api.openai.com"
-#   OpenAIKey: "replace-with-openai-api-key"
+#   openai:
+#     Type: OpenAI
+#     Endpoint: "https://api.openai.com"
+#     Key: "replace-with-openai-api-key" # Bearer 인증
+#     Models:
+#       - Name: gpt-6.1-sol
 # 보안정보 암호화: KEK 패스워드는 OS 자격 증명 금고(biz-bizadm-modelrouter-server://kek)에 자동 생성·보관
 Kms:
   DekFilePath: "dek.bin" # KEK로 wrap된 DEK 파일 (ContentRootPath 기준, 없으면 자동 생성)
@@ -28,7 +45,7 @@ Kms:
 # 요청 model 접미사로 설정 Effort를 재정의할 수 있습니다:
 # 예: Bizadm-GPT-6-LUNA-high 요청은 upstream model=Bizadm-GPT-6-LUNA, effort=high 로 전달
 # 허용 접미사: -none, -low, -medium, -high, -xhigh, -max
-# 권장: 모델별 reasoning / chat+tools 정책
+# 권장: 모델별 reasoning / chat+tools 정책 (키는 Providers[*].Models[].Name, OpenAI 프로토콜 라우트에 적용)
 # ChatToolsMode:
 #   BridgeToResponses - tools+reasoning → Responses 우회 후 chat 응답으로 변환 (Cursor/에이전트 권장)
 #   ForceNone         - chat에 reasoning_effort=none (LUNA 저하 경로; SupportsNone=false면 bridge 폴백)
